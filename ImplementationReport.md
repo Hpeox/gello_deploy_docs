@@ -213,13 +213,21 @@ Initial relevant repository status: all relevant repositories were clean before 
 
 ### Task 9: Replace tautological ZMQ buffer isolation assertion
 
-- Status: pending
+- Status: done
 - Affected repositories: MainController
-- Files changed: none yet
-- Tests added or modified: none yet
-- Tests run and results: none yet
-- Commit hashes: none yet
-- Notes: Compare persisted ZMQ `.npz` ranges or row sets, not directory existence.
+- Files changed:
+  - `MainController/src/MainController/test/test_maincontroller_mock_runtime.py`
+  - `ImplementationReport.md`
+- Tests added or modified:
+  - Replaced the tautological `or second_demo_dir.exists()` assertion with persisted ZMQ `.npz` checks.
+  - Asserted both demos save ZMQ rows and the second demo's first `seq` is greater than the first demo's last `seq`.
+- Tests run and results:
+  - `bash -lc 'source /home/robot/miniconda3/etc/profile.d/conda.sh; conda deactivate; python -m compileall MainController/src/MainController/test/test_maincontroller_mock_runtime.py'` passed.
+  - `bash -lc 'source /home/robot/miniconda3/etc/profile.d/conda.sh; conda deactivate; python -m pytest MainController/src/MainController/test/test_maincontroller_mock_runtime.py -q'` passed outside the sandbox with approval because the mock UDS server needs Unix socket bind: `21 passed in 23.29s`.
+- Commit hashes:
+  - MainController: `c31a4d9b5a42ecb76ed90b2554934be4ffbf1d48`
+  - outer docs repository: report update is committed separately because a commit cannot contain its own hash.
+- Notes: Compare persisted ZMQ `.npz` ranges, not directory existence.
 
 ### Task 10: Add npz field-length consistency assertions
 
@@ -259,7 +267,7 @@ Initial relevant repository status: all relevant repositories were clean before 
 ## Current Work
 
 - Current task: none
-- Current state: Task 8 MainController changes committed; docs/report checkpoint pending outer docs commit.
+- Current state: Task 9 MainController changes committed; report checkpoint pending outer docs commit.
 
 ## Unresolved Risks and Follow-up Notes
 
