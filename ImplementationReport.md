@@ -184,7 +184,7 @@ Initial relevant repository status: all relevant repositories were clean before 
 - Tests added or modified: none required
 - Tests run and results: not run; documentation-only task.
 - Commit hashes:
-  - outer docs repository: pending commit
+  - outer docs repository: `9e9e562e5f097bed38f2dbce43b5de93467f1906`
 - Notes: Documented one `drop_warning` per detected non-contiguous key event, terminal and `controller_events.jsonl` emission, `missing_frame_count` / `warning_count` accumulation, large interval as a separate warning reason, manifest monitor summary fields, and no automatic pause/abort policy.
 
 ### Task 8: Manifest frame counts and discarded-demo status record
@@ -229,8 +229,8 @@ Initial relevant repository status: all relevant repositories were clean before 
 
 ## Current Work
 
-- Current task: Task 7
-- Current state: documentation update complete; committing task checkpoint.
+- Current task: none
+- Current state: Task 7 documentation changes committed; report hash checkpoint pending outer docs commit.
 
 ## Unresolved Risks and Follow-up Notes
 
