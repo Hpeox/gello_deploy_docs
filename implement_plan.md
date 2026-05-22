@@ -1,0 +1,254 @@
+# MainController 具体实现计划
+
+## 总体路线
+
+`MainController` 做成 ROS2 `ament_python` 包，但主体按普通 Python 控制程序设计。通过 `ros2 run MainController main_controller` 启动，内部使用线程、队列、子进程管理、UDS socket、ZMQ 和少量 rclpy service/subscriber。
+
+主控不订阅 RealSense `image_raw`。实时监控依赖 `/camX/camera/color/metadata` 和 `/camX/camera/depth/metadata`；rosbag2 仍负责记录 image topic。ZMQ receiver 必须从主控启动后一直读取，直到主控退出。
+
+## 当前已实现内容
+
+截至当前实现轮次，MainController 已完成第一版可编译、可单元测试的控制器骨架；尚未做真实硬件和完整 ROS2 采集链路联调。
+
+### 已落地模块
+
+- 包入口：`setup.py` 已新增 `main_controller = MainController.main:main`。
+- 依赖声明：`package.xml` 已补充 `rosbag2_interfaces`、`realsense2_camera_msgs`、`python3-zmq`、`python3-numpy`。
+- `config.py`：集中定义默认路径、ZMQ endpoint、UDS socket、频率阈值、RealSense metadata topic 和 fatal error pattern。
+- `main.py`：实现 CLI、命令队列、主状态机、demo start/pause/done/discard/stop 流程，以及 RealSense fatal error 自动暂停和重启路径。
+- `uds_client.py`：实现 FT300S/XenseTacSensor 共用 UDS client，包含协议 pack/unpack、自动连接、后台接收、`INIT_READY` 等待、ACK 等待和无硬超时 flush 等待。
+- `zmq_telemetry.py`：在 MainController 内独立实现 ZMQ 504-byte telemetry frame 解包和 always-on receiver，不 import `Zmq_Ref`。
+- `realsense_metadata.py`：实现 RealSense metadata 订阅与 JSON 解析，输出 `frame_number`、`header.stamp`、`frame_timestamp`、`hw_timestamp` 等轻量 timing event，不订阅 `image_raw`。
+- `rosbag_control.py`：封装 `/rosbag2_recorder/record`、`/resume`、`/pause`、`/stop` service call，并已确认当前 ROS2 接口字段匹配。
+- `processes.py`：实现子进程启动、日志捕获、fatal pattern 检测、SIGINT/SIGTERM/SIGKILL 停止和重启。
+- `drop_monitor.py`：实现 frame/seq/frame_number 连续性和帧间隔告警检测。
+- `buffers.py`：实现 controller JSONL log、demo `.npz` buffer 和 manifest 写入。
+
+### 已实现业务语义
+
+- ZMQ receiver 从启动后持续 drain socket；demo 外数据不写入 demo buffer，但不会停读，包括 `d/x` 后回到 `WAIT_START` 的 demo 间隔。
+- 主控启动时等待 ZMQ 首个合法 frame、等待 FT300S/XenseTacSensor UDS 连接和 `INIT_READY`。
+- `s`：创建或恢复 demo，发送两个传感器 `START_REQ`，首次 segment 调用 rosbag2 `record`，随后调用 `resume`。
+- `p`：发送两个传感器 `PAUSE_REQ`，调用 rosbag2 `pause`，不再用 `stop` 暂停。
+- `d`：进入 `FINALIZING`，发送 `DEMO_DONE_REQ`，等待 ACK 和 `saved_file`；传感器 flush 不设硬超时，只周期性写进度日志；随后 stop rosbag 并保存 `.npz`/manifest。
+- `x`：发送 `DEMO_DISCARD_REQ`，stop rosbag，丢弃当前 demo buffer。
+- `q`：停止 rosbag、传感器、ZMQ、RealSense metadata monitor 和子进程。
+- RealSense stdout/stderr 中检测到 `Hardware Error` 或 `Depth stream start failure` 时，会向主控命令队列投递 fatal event；若当前为 `COLLECTING`，先自动暂停，再重启 RealSense camera launch。
+
+### 已验证内容
+
+- 系统 Python 导入检查通过：`PYTHONPATH=MainController/src/MainController /usr/bin/python3 ...` 能导入 MainController 核心模块。
+- `zmq` 在 `/usr/bin/python3` 下可用，版本为 `24.0.1`；默认 shell 的 conda Python 3.13 仍看不到 apt 安装的 `python3-zmq`。
+- 编译检查通过：`/usr/bin/python3 -m compileall MainController/src/MainController/MainController`。
+- 新增单元测试 `test_maincontroller_core.py` 并通过，当前结果为 `4 passed`。
+- ROS service 接口字段已确认：`Record.Request` 字段为 `uri`，`Pause/Resume/Stop.Request` 均为空请求。
+
+### 尚未完成/需要联调
+
+- 尚未在真实 FT300S、XenseTacSensor、RealSense 和 rosbag2 recorder 全链路上运行 `main_controller`。
+- 尚未验证 conda 启动命令在当前 shell/ROS2 启动方式下是否需要额外环境清理。
+- 尚未验证 `ros2 run MainController main_controller` 的 colcon build/install 流程。
+- 尚未做真实 metadata topic 与当前启用相机列表的运行时发现；目前 topic 来自配置默认值。
+- 尚未做真实 RealSense fatal log 注入到子进程 stdout/stderr 的端到端测试。
+- 尚未做真实 demo 采集输出目录、`.npz` 内容和 manifest 的完整验收。
+
+## 技术选择
+
+- 并发模型：
+  - 主线程运行控制状态机，串行处理 `s/p/d/x/q`。
+  - `InputThread` 阻塞读取用户输入，只把命令放入队列，不执行业务逻辑。
+  - `UdsClientThread` 两个，分别处理 FT300S 和 XenseTacSensor 的 UDS 收发。
+  - `ZmqReceiverThread` 常驻运行，从启动到退出持续读取跨主机 ZMQ。
+  - `ProcessMonitorThread` 监控子进程 stdout/stderr 和退出状态。
+  - rclpy 用于 rosbag2 service 调用和 RealSense metadata 订阅。
+- GIL 处理：
+  - UDS、ZMQ poll、stdin、subprocess stdout 都是阻塞 I/O，线程足够。
+  - 不订阅 `image_raw`，避免大图像反序列化抢 GIL 和 CPU。
+  - RealSense metadata 消息很小，适合在主控进程内订阅并解析。
+- RealSense 时间戳：
+  - 使用 `/camX/camera/color/metadata` 和 `/camX/camera/depth/metadata`。
+  - 实时监控用 metadata 的 `frame_number`、`header.stamp`、`frame_timestamp`、`hw_timestamp`。
+  - rosbag 仍记录 image topic；离线可继续用 `tools/realsense_bag_compare.py` 验证 metadata 与 image header 的对应关系。
+
+## 实现模块
+
+- `main.py`：CLI、启动入口、主状态机。
+- `config.py`：默认参数、topic 列表、频率阈值、路径配置。
+- `uds_client.py`：共用 UDS 客户端，支持自动连接、ACK 等待、FRAME_READY 接收。
+- `zmq_telemetry.py`：在 MainController 内独立实现 504-byte telemetry unpack，不 import `Zmq_Ref`。
+- `realsense_metadata.py`：订阅 metadata topic，解析 JSON，输出 frame timing 事件。
+- `drop_monitor.py`：统一检测 frame_id/seq/frame_number 不连续和帧间隔异常。
+- `buffers.py`：管理 demo buffer，完成后保存 `.npz`。
+- `processes.py`：启动/停止/重启 FT300S、XenseTacSensor、RealSense launch。
+- `rosbag_control.py`：封装 `/rosbag2_recorder/record`、`/resume`、`/pause`、`/stop`。
+
+## 状态机
+
+### 状态定义
+
+- `BOOT`：主控进程刚启动，尚未启动依赖服务。
+- `STARTING_SERVICES`：正在启动 FT300S、XenseTacSensor、RealSense camera launch、rosbag2 recorder、ZMQ receiver。
+- `INIT`：依赖服务已启动，正在连接 UDS、等待 ZMQ 首帧、初始化传感器。
+- `WAIT_START`：全部就绪，等待用户输入 `s` 开始 demo。
+- `COLLECTING`：正在采集 demo，UDS/ZMQ/RealSense metadata buffers 正在写入。
+- `PAUSED`：当前 demo 暂停，ZMQ 仍持续读取但不写入 demo buffer；恢复后重置 drop baseline。
+- `FINALIZING`：正在完成 demo，等待传感器 flush ACK、停止 rosbag、保存 `.npz` 和 manifest。
+- `DISCARDING`：正在放弃 demo，停止 rosbag 并丢弃 demo buffer。
+- `STOPPING`：正在停止所有服务和子进程。
+- `STOPPED`：主控退出前的终态。
+- `ERROR`：不可恢复错误状态，例如必要模块启动失败、ZMQ 无首帧、UDS 初始化失败。
+
+### 允许迁移
+
+- `BOOT -> STARTING_SERVICES`
+- `STARTING_SERVICES -> INIT`
+- `STARTING_SERVICES -> ERROR`
+- `INIT -> WAIT_START`
+- `INIT -> ERROR`
+- `WAIT_START -> COLLECTING`：用户输入 `s`
+- `WAIT_START -> STOPPING`：用户输入 `q`
+- `COLLECTING -> PAUSED`：用户输入 `p`，或 RealSense fatal error 自动触发暂停
+- `COLLECTING -> FINALIZING`：用户输入 `d`
+- `COLLECTING -> DISCARDING`：用户输入 `x`
+- `COLLECTING -> STOPPING`：用户输入 `q`
+- `PAUSED -> COLLECTING`：用户输入 `s`
+- `PAUSED -> FINALIZING`：用户输入 `d`
+- `PAUSED -> DISCARDING`：用户输入 `x`
+- `PAUSED -> STOPPING`：用户输入 `q`
+- `FINALIZING -> WAIT_START`
+- `FINALIZING -> STOPPING`：finalizing 完成后执行已排队的 `q`
+- `DISCARDING -> WAIT_START`
+- `STOPPING -> STOPPED`
+- `ERROR -> STOPPING`
+
+### 状态语义
+
+- 只有 `COLLECTING` 写入当前 demo buffer。
+- `PAUSED` 不写入 demo buffer，但 ZMQ receiver 必须继续 drain socket。
+- `d` 或 `x` 后回到 `WAIT_START`，ZMQ receiver 仍必须继续 drain socket；这些 demo 间数据不写入任何已结束或未开始的 demo buffer。
+- `FINALIZING` 不接受新的 `s/p/d/x`，但允许排队 `q`，待落盘完成后停止。
+- RealSense 自动重启期间，如果主控处于 `COLLECTING`，必须先迁移到 `PAUSED`。
+
+## 运行流程
+
+### 启动阶段
+
+1. 创建 `runtime_sessions/session_<timestamp>/`。
+2. 启动 FT300S、XenseTacSensor、RealSense camera launch、rosbag2 recorder launch。
+3. 启动 ZMQ receiver，默认连接 `tcp://127.0.0.1:6000`。
+4. ZMQ 必须收到首个合法 frame 后，主控才继续进入就绪流程。
+5. 连接两个 UDS 服务并自动完成 `INIT_REQ/INIT_READY`。
+6. 启动 RealSense metadata 订阅。
+
+### `s`: start/resume demo
+
+1. 创建或恢复当前 demo。
+2. 向 FT300S/XenseTacSensor 发送 `START_REQ` 并等待 ACK。
+3. 如果是新 recording segment，先调用 `/rosbag2_recorder/record` 指定 demo bag URI。
+4. 调用 `/rosbag2_recorder/resume`。注意：rosbag2 使用 `record` 服务后还需要调用一次 `resume`，恢复暂停后也同样调用 `resume`。
+5. 开启 UDS/ZMQ/RealSense metadata demo buffer。
+
+### `p`: pause demo
+
+1. 向 FT300S/XenseTacSensor 发送 `PAUSE_REQ`。
+2. 调用 `/rosbag2_recorder/pause`，不要调用 `stop`。
+3. 暂停 demo buffer，但 ZMQ receiver 继续读消息。
+4. 恢复后重置 drop monitor baseline。
+
+### `d`: finish and save demo
+
+1. 发送 `DEMO_DONE_REQ`。
+2. 进入 `FINALIZING`，等待传感器 ACK 和 `saved_file`。
+3. 传感器 flush 不设硬超时，只周期性打印进度和写 log。
+4. 调用 `/rosbag2_recorder/stop` 停止当前 recording。
+5. 保存 `.npz` 和 `manifest.json`。
+
+### `x`: discard demo
+
+1. 发送 `DEMO_DISCARD_REQ`。
+2. 调用 `/rosbag2_recorder/stop` 停止当前 recording。
+3. 丢弃本次 demo buffer，只保留 controller log。
+
+### `q`: stop all
+
+1. 安全停止当前 demo/recording。
+2. 向 FT300S/XenseTacSensor 发送 `STOP_REQ`。
+3. 关闭 ZMQ、rclpy、子进程。
+
+## ZMQ 特别规则
+
+ZMQ receiver 从主控启动后一直运行，直到主控退出。即使主控处于 `WAIT_START`、`PAUSED`、`FINALIZING`、`DISCARDING`，也必须持续读取 socket，避免跨主机对端队列堆积或溢出。`d/x` 完成后回到 `WAIT_START` 的 demo 间隙同样不能停读。
+
+demo 之外的数据进入环形缓冲或直接丢弃，但不能停止读。demo 内数据写入当前 demo buffer，并同步做 drop monitor。
+
+## RealSense 节点监控和重启
+
+- `ProcessMonitorThread` 持续读取 RealSense launch stdout/stderr。
+- 捕捉到以下字符串时触发重启：
+  - `Hardware Error`
+  - `Depth stream start failure`
+- 若当前状态为 `COLLECTING`，先自动执行暂停流程并进入 `PAUSED`：
+  - 向 FT300S/XenseTacSensor 发送 `PAUSE_REQ`。
+  - 调用 `/rosbag2_recorder/pause` 暂停当前 recording。
+  - 暂停 demo buffer。
+  - 重置 RealSense metadata drop baseline。
+- 写终端和 `controller_events.jsonl`：错误内容、触发时间、自动暂停结果。
+- 对 RealSense camera launch 进程组发送 SIGINT，等待短暂 grace period。
+- 未退出再 SIGTERM/SIGKILL。
+- 用原命令重新启动 launch。
+- 重启完成后记录 restart event，并在 manifest 中累计重启次数。
+- 自动重启不会自动恢复采集；用户确认设备恢复后再输入 `s` 继续。
+
+## 丢帧监控
+
+- FT300S：
+  - 检查 UDS `frame_id` 连续。
+  - 检查 `timestamp_ns` 间隔，默认 100 Hz，超过 20 ms 告警。
+- XenseTacSensor：
+  - 检查 UDS `frame_id` 连续。
+  - 检查 `timestamp_ns_0/timestamp_ns_1`，默认 30 Hz，超过 66.7 ms 告警。
+- ZMQ：
+  - 按 source 独立检查 `seq` 连续。
+  - 默认 50 Hz，超过 40 ms 告警。
+- RealSense：
+  - 按 metadata stream 独立检查 `frame_number` 连续。
+  - 默认 30 Hz，超过 66.7 ms 告警。
+- 告警同时输出到终端和 `controller_events.jsonl`，并累计到 manifest。
+
+## 数据保存
+
+- 低频控制日志：`controller_events.jsonl`。
+- 高频数据：`.npz`，默认不压缩，避免 demo 完成时 CPU 压缩阻塞。
+  - `ft300_timestamps.npz`
+  - `xense_timestamps.npz`
+  - `realsense_metadata.npz`
+  - `zmq_telemetry.npz`
+- `manifest.json`：
+  - demo 起止时间。
+  - rosbag URI/segment。
+  - FT300S/XenseTacSensor `saved_file`。
+  - 各 `.npz` 路径和帧数。
+  - 丢帧告警统计。
+  - RealSense 重启次数和时间点。
+
+## 测试计划
+
+- 单元测试：
+  - UDS mock server。
+  - ZMQ 504-byte unpack。
+  - RealSense metadata JSON parser。
+  - DropMonitor 连续帧、跳号、超间隔、暂停恢复 baseline。
+  - `.npz` 字段长度一致性。
+- 集成测试：
+  - ZMQ 在 pause/finalizing 时持续发送，验证主控仍持续 drain。
+  - 正常连续 demo 流程 `s -> d -> s -> d`，验证每段 demo 独立保存，且 `d` 后 `WAIT_START` 期间 ZMQ 持续 drain。
+  - 丢弃后继续采集流程 `s -> x -> s -> d`，验证 discard 不保存 manifest，且 `x` 后 `WAIT_START` 期间 ZMQ 持续 drain。
+  - 注入 `Hardware Error` 和 `Depth stream start failure` 日志，验证 RealSense 自动暂停和重启。
+  - 执行 `s -> p -> s -> d -> q`，检查 `.npz`、manifest、controller log。
+  - 在正确 ROS2 Python 环境下运行 `tools/realsense_bag_compare.py`，复核 metadata 与 image header 时间戳一致性。
+
+## 假设
+
+- RealSense metadata topic 对当前启用相机可用。
+- 第一版只实现采集、监控和 manifest，不生成最终对齐数据集。
+- 传感器 flush 时间不固定，因此不设置硬超时，只做进度 watchdog。
