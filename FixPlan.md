@@ -530,3 +530,223 @@
   - Keep `discarded` and `failed` separate: `discarded` expresses completed user
     intent, while `failed` expresses an unsuccessful system transaction.
 - Suggested execution order: after task 4, before task 8
+
+## Verification follow-up tasks
+
+These tasks are based on the latest verification pass. Original FixPlan tasks
+1, 2, 3, 5, 7, 8, 9, and 10 are considered validated by the current tests.
+Task 6 is validated by the current mock / non-hardware tests, while real
+four-camera acceptance remains a hardware boundary item. The items below close
+the remaining Task 4 / Task 11 gaps, the UDS finalization hang, and the missing
+regression coverage.
+
+### 12. Paused resume rollback must invalidate every paused demo sensor
+
+- Follow-up for: task 4
+- Strategy: Fix code and tests. Keep fresh-start rollback scoped to sensors that
+  ACKed `START_REQ`, but make paused-resume rollback cover every required sensor
+  that already owns the paused demo context. If a required paused sensor cannot
+  be confirmed discarded, write a failed manifest and stop the system through
+  `ERROR -> STOPPING -> STOPPED` instead of returning to `WAIT_START` with a
+  possibly live stale demo cache.
+- Involved files:
+  - `MainController/src/main_controller/main_controller/main.py`
+  - `MainController/src/main_controller/test/test_maincontroller_mock_runtime.py`
+  - `implement_plan.md`
+  - `MainController/src/main_controller/README.md`
+- Main code changes:
+  - In `start_or_resume_demo()`, capture the resume context before sending
+    `START_REQ`: for `new_demo=False`, every required sensor is a rollback
+    target because each one may still hold the paused demo cache.
+  - Extend `_fail_start_resume_transaction()` to accept both
+    `acked_start_sensors` and `rollback_target_sensors`.
+  - For fresh start failures, keep `rollback_target_sensors` equal to
+    `acked_start_sensors`.
+  - For paused resume failures, send `DEMO_DISCARD_REQ` to all required paused
+    sensors, including the sensor that returned `ERROR` or timed out and any
+    sensor that was not reached because an earlier resume command failed.
+  - Record both `acked_start_sensors` and `rollback_target_sensors` in the
+    failed manifest, along with per-sensor discard results.
+  - If every rollback target ACKs discard and rosbag cleanup succeeds, clear the
+    demo context and return to `WAIT_START` with `status: "failed"`.
+  - If any rollback target times out, disconnects, or returns `ERROR`, record
+    `rollback_unconfirmed_sensors`, set state to `ERROR`, and run `stop_all()`.
+  - Treat rosbag stop failure during resume rollback as unconfirmed cleanup and
+    route it through the same fatal stop path.
+- Documentation changes:
+  - State that paused resume rollback invalidates the whole paused demo on every
+    required sensor, not just sensors that ACKed the new `START_REQ`.
+  - Define the successful rollback terminal state as `WAIT_START` and the
+    unconfirmed rollback terminal state as `STOPPED` after
+    `ERROR -> STOPPING`.
+- Test plan:
+  - Update the existing paused resume failure test so Xense receives
+    `DEMO_DISCARD_REQ` after returning `ERROR` to resume `START_REQ`.
+  - Add paused resume failure where FT300S fails before Xense receives
+    `START_REQ`; assert both sensors receive discard rollback because both held
+    paused context.
+  - Add paused resume failure where one rollback discard returns `ERROR` or
+    times out; assert failed manifest includes `rollback_unconfirmed_sensors`
+    and final state is `STOPPED`.
+  - Keep the fresh-start partial failure test asserting that a sensor that never
+    held the new demo does not receive unnecessary discard rollback.
+- Risks and notes:
+  - This task intentionally preserves task 4's all-or-nothing policy while
+    fixing the resume-specific stale-cache case.
+  - The rollback manifest should distinguish `acked_start_sensors` from
+    `rollback_target_sensors`; otherwise the test can pass while still hiding
+    the exact paused-resume failure mode.
+- Suggested execution order: first follow-up fix
+
+### 13. Rosbag pause and finish stop failures are transaction failures
+
+- Follow-up for: task 11
+- Strategy: Fix code and tests. Treat `rosbag.pause()` and finish-time
+  `rosbag.stop()` as required command operations, just like the sensor command
+  ACKs. A demo may be written as `status: "done"` only after every required
+  finish operation succeeds.
+- Involved files:
+  - `MainController/src/main_controller/main_controller/main.py`
+  - `MainController/src/main_controller/test/test_maincontroller_mock_runtime.py`
+  - `implement_plan.md`
+  - `MainController/src/main_controller/README.md`
+- Main code changes:
+  - In `pause_demo()`, collect `rosbag_pause_result` with fields like `ok`,
+    `action`, and `error`.
+  - If `rosbag.pause()` fails, write a failed manifest with
+    `failure_stage: "rosbag_pause"`, include `ft300`, `xense`, and
+    `rosbag_pause` command results, then enter `ERROR -> STOPPING -> STOPPED`.
+  - In `finish_demo()`, collect `rosbag_stop_result` instead of logging and
+    continuing after `rosbag.stop()` raises.
+  - Skip the RealSense rosbag post-check when `rosbag.stop()` fails, because the
+    bag finalization is not trusted.
+  - Mark finish as `status: "failed"` when either sensor finish or rosbag stop
+    fails. Include `command_results` containing `ft300`, `xense`, and
+    `rosbag_stop`.
+  - Preserve available sensor `saved_file` values and controller `.npz` outputs
+    for failed finish when `demo_store` exists, but never write
+    `status: "done"` on a rosbag stop failure.
+  - Clear demo and rosbag context after the failed manifest is written, then use
+    the deterministic fatal cleanup path.
+- Documentation changes:
+  - Define `done` as: required sensors finished, rosbag stopped successfully,
+    and required post-checks passed.
+  - Define rosbag pause/stop failures as command transaction failures that write
+    `status: "failed"` with detailed command results.
+- Test plan:
+  - Simulate `rosbag.pause()` failure after both sensors ACK `PAUSE_REQ`; assert
+    `pause_demo()` returns `False`, a failed manifest is written, and final
+    state is `STOPPED`.
+  - Simulate finish `rosbag.stop()` failure after both sensors ACK
+    `DEMO_DONE_REQ`; assert no `status: "done"` manifest is written.
+  - Assert the finish stop-failure manifest records `rosbag_stop.ok == False`,
+    available sensor `saved_file` values, and no successful
+    `realsense_rosbag_postcheck`.
+  - Keep existing discard rosbag stop failure coverage aligned with the same
+    command-result shape.
+- Risks and notes:
+  - `stop_all()` may attempt rosbag stop again during fatal cleanup; tests
+    should assert the manifest result from the original transaction, not depend
+    on the cleanup retry count.
+  - Failed finish can still save controller `.npz` artifacts if they are
+    available; the key invariant is the manifest status and failure reason.
+- Suggested execution order: after task 12
+
+### 14. UDS finalization wait must not hang forever
+
+- Follow-up for: remaining P1 issue
+- Strategy: Fix code and tests. Make `DEMO_DONE_REQ` waiting responsive to peer
+  disconnect and add a configurable hard timeout for finalization flush waits.
+  The controller should return a failed command result instead of blocking the
+  main command loop forever.
+- Involved files:
+  - `MainController/src/main_controller/main_controller/uds_client.py`
+  - `MainController/src/main_controller/main_controller/main.py`
+  - `MainController/src/main_controller/main_controller/config.py`
+  - `MainController/src/main_controller/test/test_maincontroller_mock_runtime.py`
+  - optionally `MainController/src/main_controller/test/test_maincontroller_core.py`
+  - `implement_plan.md`
+  - `MainController/src/main_controller/README.md`
+- Main code changes:
+  - In `UdsClient._mark_disconnected()`, wake all pending ACK waiters and store
+    a structured error such as `{"error": "uds_disconnected"}` for each pending
+    command.
+  - When `send_msg()` fails before the wait starts, store a structured
+    `send_failed` error so `last_error_for(cmd)` is meaningful.
+  - Add `RuntimeConfig.sensor_flush_timeout_s`, with a finite production
+    default and an optional CLI argument such as `--sensor-flush-timeout-s`.
+    The CLI should also allow an explicit unbounded mode, for example by
+    accepting `none` / `None`, only when a truly unbounded flush is desired.
+  - Replace `_sensor_command_result_no_timeout()` usage in `finish_demo()` with
+    a progress-logging wait that passes `sensor_flush_timeout_s`.
+  - On flush timeout, store a structured error for the pending command so
+    `last_error_for(cmd)` and the command result can report a clear value such
+    as `{"error": "ack_timeout", "timeout_s": ...}`, then route through the
+    existing failed finish manifest path.
+  - Keep progress logging during long flush waits, but ensure `q` and fatal
+    events are not blocked indefinitely by a silent connected peer.
+- Documentation changes:
+  - Replace the old "no hard timeout" finalization wording with a bounded,
+    configurable flush timeout policy.
+  - Document `--sensor-flush-timeout-s` as an optional CLI override, including
+    the explicit unbounded value if it is supported.
+  - Document that peer disconnect wakes pending ACK waits and marks the command
+    failed.
+- Test plan:
+  - Add a mock sensor mode that receives `DEMO_DONE_REQ` but sends neither ACK
+    nor ERROR while keeping the socket open; set
+    `sensor_flush_timeout_s` low and assert `finish_demo()` returns through the
+    failed manifest path.
+  - Add a mock sensor mode that closes the UDS connection after
+    `DEMO_DONE_REQ`; assert the ACK waiter wakes immediately with a
+    `uds_disconnected` error.
+  - Assert both cases leave final state `STOPPED` after
+    `ERROR -> STOPPING`, and that later queued commands are not required to
+    unblock the controller.
+  - Add focused UDS client coverage if the runtime test is too slow or too
+    coupled to socket timing.
+- Risks and notes:
+  - A finite timeout changes the previous operator expectation for extremely
+    slow sensor flushes, so the timeout should be configurable and documented.
+  - The timeout should be long enough for real sensor flush in production, but
+    tests must override it to stay fast.
+- Suggested execution order: after task 13
+
+### 15. Close follow-up coverage gaps
+
+- Follow-up for: test coverage gaps
+- Strategy: Test hardening and explicit acceptance coverage. Add regression
+  tests for the three fixes above and keep the RealSense four-camera gap as a
+  documented hardware acceptance item rather than pretending mock tests prove
+  physical camera availability.
+- Involved files:
+  - `MainController/src/main_controller/test/test_maincontroller_mock_runtime.py`
+  - `MainController/src/main_controller/test/test_maincontroller_core.py`
+  - `MainController/src/main_controller/README.md`
+  - optionally `implement_plan.md`
+- Test changes:
+  - Task 12 coverage: paused resume failure must discard all paused-context
+    sensors or stop if rollback cannot be confirmed.
+  - Task 13 coverage: `rosbag.pause()` failure and finish `rosbag.stop()`
+    failure must both write failed manifests and must not report successful
+    pause/done.
+  - Task 14 coverage: `DEMO_DONE_REQ` with no ACK/ERROR and UDS peer disconnect
+    must not hang indefinitely.
+  - Keep existing sufficient coverage for tasks 1, 2, 3, 5, 8, 9, and 10
+    unchanged except for helper updates needed by the new tests.
+  - Keep the RealSense four-camera / eight-image-topic case as a hardware
+    acceptance checklist: formal mode requires all eight configured image topics
+    and should fail closed when the checked-in launch profile only exposes a
+    subset.
+- Verification commands:
+  - `source /home/robot/miniconda3/etc/profile.d/conda.sh; conda deactivate; python -m pytest MainController/src/main_controller/test/test_maincontroller_core.py -q`
+  - `source /home/robot/miniconda3/etc/profile.d/conda.sh; conda deactivate; python -m pytest MainController/src/main_controller/test/test_maincontroller_mock_runtime.py -q`
+- Acceptance notes:
+  - In the current sandbox, the mock runtime test may require elevated
+    permissions for Unix-domain socket bind; a sandbox `PermissionError` should
+    be recorded separately from assertion failures.
+  - Hardware acceptance remains open until a real four RealSense camera run
+    proves all configured color and aligned-depth image topics are present and
+    recorded.
+- Suggested execution order: add alongside tasks 12 through 14, then run both
+  MainController pytest commands
