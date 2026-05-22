@@ -101,6 +101,12 @@
 
 告警必须同时输出到终端和 `controller_events.jsonl`。
 
+每个检测到的正向 key 不连续事件都会发出一个 `drop_warning`。监控器按正向 key gap
+累计 `missing_frame_count`，并按实际发出的 warning 数累计 `warning_count`。该规则同样
+适用于 FT300S `frame_id`、Xense `frame_id`、ZMQ 每个 source 的 `seq`，以及 RealSense
+metadata 每个 topic 的 `frame_number`。大 timestamp interval 是独立的 `drop_warning`
+reason；同一帧既可能因为 non-contiguous key 告警，也可能因为 large interval 告警。
+
 默认阈值：
 
 - FT300S: 100 Hz，目标间隔 10 ms，超过 20 ms 告警。
@@ -111,7 +117,9 @@
 其他规则：
 
 - 暂停、恢复、demo 边界不计入丢帧；恢复后首帧重置该来源的 interval baseline。
-- 每个 demo 的 manifest 记录各来源告警数量和最大帧间隔。
+- 每个 demo 的 manifest 记录各来源 monitor summary，包括 `warning_count`、
+  `missing_frame_count` 和 `max_interval_ns`。这些 warning/statistics 字段用于采集后
+  operator review，不触发自动 pause/abort。
 
 ## RealSense Error Recovery
 

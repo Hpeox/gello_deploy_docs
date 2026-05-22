@@ -214,7 +214,15 @@ demo 之外的数据进入环形缓冲或直接丢弃，但不能停止读。dem
 - RealSense：
   - 按 metadata stream 独立检查 `frame_number` 连续。
   - 默认 30 Hz，超过 66.7 ms 告警。
-- 告警同时输出到终端和 `controller_events.jsonl`，并累计到 manifest。
+- 每个正向 key 不连续事件发出一个 `drop_warning`，同时输出到终端和
+  `controller_events.jsonl`。
+- `missing_frame_count` 按正向 key gap 累计，`warning_count` 按实际发出的 warning
+  数累计。
+- large timestamp interval 是独立的 `drop_warning` reason，可与 non-contiguous key
+  warning 同时出现。
+- 每个 demo manifest 记录各 stream monitor summary，包括 `warning_count`、
+  `missing_frame_count` 和 `max_interval_ns`。这些统计仅供采集后 operator review，不触发
+  自动 pause/abort。
 
 ## 数据保存
 

@@ -175,13 +175,17 @@ Initial relevant repository status: all relevant repositories were clean before 
 
 ### Task 7: Document drop-warning behavior for non-contiguous stream keys
 
-- Status: pending
+- Status: done
 - Affected repositories: outer docs repository
-- Files changed: none yet
+- Files changed:
+  - `plan.md`
+  - `implement_plan.md`
+  - `ImplementationReport.md`
 - Tests added or modified: none required
-- Tests run and results: none yet
-- Commit hashes: none yet
-- Notes: Documentation-only; no automatic pause/abort policy.
+- Tests run and results: not run; documentation-only task.
+- Commit hashes:
+  - outer docs repository: pending commit
+- Notes: Documented one `drop_warning` per detected non-contiguous key event, terminal and `controller_events.jsonl` emission, `missing_frame_count` / `warning_count` accumulation, large interval as a separate warning reason, manifest monitor summary fields, and no automatic pause/abort policy.
 
 ### Task 8: Manifest frame counts and discarded-demo status record
 
@@ -225,8 +229,8 @@ Initial relevant repository status: all relevant repositories were clean before 
 
 ## Current Work
 
-- Current task: none
-- Current state: Task 6 MainController changes committed; docs/report checkpoint pending outer docs commit.
+- Current task: Task 7
+- Current state: documentation update complete; committing task checkpoint.
 
 ## Unresolved Risks and Follow-up Notes
 
