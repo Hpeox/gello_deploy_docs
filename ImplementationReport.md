@@ -342,18 +342,40 @@ Initial relevant repository status: all relevant repositories were clean before 
   - outer docs repository: report update is committed separately because a commit cannot contain its own hash.
 - Notes: `RuntimeConfig.sensor_flush_timeout_s` defaults to a finite `300.0` seconds and can be set to `None` via CLI `--sensor-flush-timeout-s none` / `unbounded`. Peer disconnect and send/ACK timeout now populate structured command errors for manifest reporting.
 
+### Task 15: Close follow-up coverage gaps
+
+- Status: done
+- Affected repositories: MainController, outer docs repository
+- Files changed:
+  - `MainController/src/main_controller/README.md`
+  - `implement_plan.md`
+  - `ImplementationReport.md`
+- Tests added or modified:
+  - Task 12 regression coverage was added with paused resume rollback tests in task 12.
+  - Task 13 regression coverage was added with rosbag pause/stop failure tests in task 13.
+  - Task 14 regression coverage was added with no-ACK flush timeout and UDS peer disconnect tests in task 14.
+  - README and implementation plan now state that physical four RealSense availability remains a hardware acceptance boundary.
+- Tests run and results:
+  - `bash -lc 'source /home/robot/miniconda3/etc/profile.d/conda.sh; conda deactivate; python -m pytest MainController/src/main_controller/test/test_maincontroller_core.py -q'` passed: `9 passed in 0.32s`.
+  - `bash -lc 'source /home/robot/miniconda3/etc/profile.d/conda.sh; conda deactivate; python -m pytest MainController/src/main_controller/test/test_maincontroller_mock_runtime.py -q'` passed outside the sandbox with approval because the mock UDS server needs Unix socket bind: `27 passed in 32.52s`.
+- Commit hashes:
+  - MainController: `27f7499530fd18dbfb78520f91cce7b20513c6ce`
+  - outer docs repository: report update is committed separately because a commit cannot contain its own hash.
+- Notes: Mock/non-hardware tests validate configured formal-mode requirements and fail-closed behavior, not physical camera availability. Real four-camera acceptance remains open.
+
 ## Current Work
 
-- Current task: task 15 pending
-- Current state: FixPlan tasks 1-14 are implemented, validated, and committed.
+- Current task: none
+- Current state: FixPlan tasks 1-15 are implemented, validated, and committed.
 
 ## Final Validation
 
 - `bash -lc 'source /home/robot/miniconda3/etc/profile.d/conda.sh; conda deactivate; python -m compileall MainController/src/main_controller/main_controller MainController/src/main_controller/test/test_maincontroller_core.py MainController/src/main_controller/test/test_maincontroller_mock_runtime.py FT300S/core XenseTacSensor/core'` passed.
 - `bash -lc 'source /home/robot/miniconda3/etc/profile.d/conda.sh; conda deactivate; python -m pytest MainController/src/main_controller/test/test_maincontroller_core.py -q'` passed: `9 passed in 0.32s`.
-- `bash -lc 'source /home/robot/miniconda3/etc/profile.d/conda.sh; conda deactivate; python -m pytest MainController/src/main_controller/test/test_maincontroller_mock_runtime.py -q'` passed outside the sandbox with approval because the mock UDS server needs Unix socket bind: `21 passed in 23.36s`.
+- `bash -lc 'source /home/robot/miniconda3/etc/profile.d/conda.sh; conda deactivate; python -m pytest MainController/src/main_controller/test/test_maincontroller_mock_runtime.py -q'` passed outside the sandbox with approval because the mock UDS server needs Unix socket bind: `27 passed in 32.52s`.
 
 ## Unresolved Risks and Follow-up Notes
 
 - Broad integration or hardware acceptance tests may not be runnable in this environment.
+- Real four-camera RealSense acceptance remains open until a formal capture proves all configured color and aligned-depth image topics are present and recorded.
 - Network access is restricted; dependency installation is not assumed.

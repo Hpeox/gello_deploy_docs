@@ -302,3 +302,8 @@ readiness 和 rosbag 记录校验；精确 fps/rate 验证留作后续扩展。
 - 第一版只实现采集、监控和 manifest，不生成最终对齐数据集。
 - 传感器 flush 时间不固定，默认使用有限 `sensor_flush_timeout_s`，同时保留进度
   watchdog；只有显式配置 `none` / `unbounded` 时才允许无界等待。
+- mock / non-hardware tests cover formal-mode required topic enforcement and
+  fail-closed behavior, but physical four RealSense availability remains a
+  hardware acceptance item. Final acceptance requires a real formal capture with
+  `cam1` to `cam4` color and aligned-depth image topics ready, recorded, and
+  passing post-record metadata validation.
