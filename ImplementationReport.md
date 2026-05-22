@@ -73,13 +73,22 @@ Initial relevant repository status: all relevant repositories were clean before 
 
 ### Task 3: Startup failure does not perform ERROR to STOPPING cleanup
 
-- Status: pending
-- Affected repositories: MainController
-- Files changed: none yet
-- Tests added or modified: none yet
-- Tests run and results: none yet
-- Commit hashes: none yet
-- Notes: Startup failure should remain visible to CLI while cleaning started resources.
+- Status: done
+- Affected repositories: MainController, outer docs repository
+- Files changed:
+  - `MainController/src/MainController/MainController/main.py`
+  - `MainController/src/MainController/test/test_maincontroller_mock_runtime.py`
+  - `ImplementationReport.md`
+- Tests added or modified:
+  - Added startup failure cleanup test covering `_wait_startup_ready()` failure after process/receiver setup.
+  - Added managed-process startup rollback test covering failure while starting the second process.
+- Tests run and results:
+  - `python -m pytest MainController/src/MainController/test/test_maincontroller_mock_runtime.py` failed before collection because the active Python environment has no `pytest` module. Environment failure, not a code failure.
+  - `python -m compileall MainController/src/MainController/MainController MainController/src/MainController/test/test_maincontroller_mock_runtime.py` passed.
+- Commit hashes:
+  - MainController: `f2555f08db83bff70a375051ca7043e127421abb`
+  - outer docs repository: report update is committed separately because a commit cannot contain its own hash.
+- Notes: `startup()` now logs `startup_failed`, transitions through `ERROR`, runs `stop_all()`, finishes in `STOPPED`, and re-raises. `_start_processes()` stops only processes that started successfully before propagating later startup failures.
 
 ### Task 4: START_REQ lacks a multi-sensor transaction boundary
 
@@ -164,7 +173,7 @@ Initial relevant repository status: all relevant repositories were clean before 
 ## Current Work
 
 - Current task: none
-- Current state: Task 2 code changes committed; report checkpoint pending outer docs commit.
+- Current state: Task 3 MainController changes committed; report checkpoint pending outer docs commit.
 
 ## Unresolved Risks and Follow-up Notes
 
