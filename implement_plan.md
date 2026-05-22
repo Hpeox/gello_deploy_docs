@@ -230,6 +230,16 @@ demo 之外的数据进入环形缓冲或直接丢弃，但不能停止读。dem
   - 各 `.npz` 路径和帧数。
   - 丢帧告警统计。
   - RealSense 重启次数和时间点。
+  - start/resume 事务失败时，写轻量 failed manifest，记录 `failure_stage`、
+    `failure_reason`、已 ACK `START_REQ` 的 sensor、`DEMO_DISCARD_REQ`
+    rollback result，以及 rosbag record/resume 状态；不保存高频 `.npz`。
+
+MainController 负责多传感器 start/resume 事务协调。FT300S 和 XenseTacSensor
+必须全部 ACK `START_REQ`，且 rosbag `record` / `resume` 必须成功，demo 才能进入
+`COLLECTING`。若后续 sensor 或 rosbag 步骤失败，MainController 对已 ACK start
+的 sensor 发送 `DEMO_DISCARD_REQ` 回滚，清空当前 demo context，并把 manifest
+状态写成 `failed`。`discarded` 仅用于用户 `x` 命令成功完成；start/resume
+事务失败即使用 discard 命令回滚 sensor，也不是用户放弃。
 
 ## 测试计划
 

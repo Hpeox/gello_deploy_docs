@@ -92,13 +92,26 @@ Initial relevant repository status: all relevant repositories were clean before 
 
 ### Task 4: START_REQ lacks a multi-sensor transaction boundary
 
-- Status: pending
+- Status: done
 - Affected repositories: MainController, outer docs repository
-- Files changed: none yet
-- Tests added or modified: none yet
-- Tests run and results: none yet
-- Commit hashes: none yet
-- Notes: Start/resume rollback uses `DEMO_DISCARD_REQ`; manifest status is `failed`, not `discarded`.
+- Files changed:
+  - `MainController/src/MainController/MainController/main.py`
+  - `MainController/src/MainController/test/test_maincontroller_mock_runtime.py`
+  - `MainController/src/MainController/README.md`
+  - `plan.md`
+  - `implement_plan.md`
+  - `ImplementationReport.md`
+- Tests added or modified:
+  - Added start transaction rollback coverage for FT300S ACK followed by Xense `START_REQ` error.
+  - Added paused resume transaction failure coverage that invalidates the paused demo and writes a failed manifest.
+  - Added rosbag resume failure coverage that rolls back both started sensors and records failed rosbag state.
+- Tests run and results:
+  - `python -m pytest MainController/src/MainController/test/test_maincontroller_mock_runtime.py` failed before collection because the active Python environment has no `pytest` module. Environment failure, not a code failure.
+  - `python -m compileall MainController/src/MainController/MainController MainController/src/MainController/test/test_maincontroller_mock_runtime.py` passed.
+- Commit hashes:
+  - MainController: `2fd606fc4c9794816bfcd032c7693c38b27e123b`
+  - outer docs repository: report update is committed separately because a commit cannot contain its own hash.
+- Notes: Start/resume now uses an all-or-nothing transaction. Failures send `DEMO_DISCARD_REQ` to sensors that ACKed `START_REQ`, stop rosbag if recording had started, write a lightweight `status: "failed"` manifest, and clear the active demo context without saving high-frequency `.npz`.
 
 ### Task 5: ZMQ receiver fatal termination only logs a warning
 
@@ -173,7 +186,7 @@ Initial relevant repository status: all relevant repositories were clean before 
 ## Current Work
 
 - Current task: none
-- Current state: Task 3 MainController changes committed; report checkpoint pending outer docs commit.
+- Current state: Task 4 MainController changes committed; docs/report checkpoint pending outer docs commit.
 
 ## Unresolved Risks and Follow-up Notes
 

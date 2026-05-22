@@ -152,6 +152,18 @@
 4. 每次开始或恢复录制时都调用一次 `/rosbag2_recorder/resume`。这是 rosbag2 recorder 的必要步骤，`record` 后也必须调用 `resume` 才进入实际录制。
 5. 开启 FT300S/XenseTacSensor/ZMQ/RealSense metadata demo buffer 和丢帧监控。
 
+MainController 是多传感器 start/resume 事务的 owner。`START_REQ` 对 FT300S 和
+XenseTacSensor 是 all-or-nothing：若任一 required sensor 返回 `ERROR`、超时，
+或 rosbag `record` / `resume` 失败，MainController 必须向已经 ACK `START_REQ`
+的 sensor 发送 `DEMO_DISCARD_REQ` 回滚，写入轻量 `manifest.json`，并清空当前
+demo context。该 manifest 使用 `status: "failed"`，记录 `failure_stage`、
+`failure_reason`、已 ACK 的 sensor、rollback action/result，以及当前 rosbag
+record/resume 状态。start/resume 事务失败不保存高频 `.npz`。`status: "discarded"`
+只表示用户通过 `x` 发起且成功完成的 discard；系统事务失败即使使用
+`DEMO_DISCARD_REQ` 回滚，也必须记录为 `failed`。`PAUSE_REQ`、`DEMO_DONE_REQ`
+和用户 `DEMO_DISCARD_REQ` 的 partial failure 规则单独定义，不依赖“两个 sensor
+总是同时成功或失败”的假设。
+
 ### `p`: pause demo
 
 1. 向 FT300S/XenseTacSensor 发送 `PAUSE_REQ` 并等待 ACK。
