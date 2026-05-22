@@ -191,6 +191,9 @@ topics 是否存在、message type 是否匹配、frame count 是否非零，并
 1. 向 FT300S/XenseTacSensor 发送 `PAUSE_REQ` 并等待 ACK。
 2. 调用 `/rosbag2_recorder/pause` 暂停当前 bag recording，不使用 `stop`。
 3. 暂停 buffers，并重置恢复后的 interval baseline。
+4. 若任一 required sensor 的 `PAUSE_REQ` 返回 `ERROR` 或超时，MainController 记录
+   `status: "failed"` manifest 和 per-sensor command result，进入 `ERROR` 并停止系统，
+   避免一个 sensor 仍 collecting 而主控处于 `PAUSED` 的歧义状态。
 
 ### `d`: finish and save demo
 
@@ -198,12 +201,18 @@ topics 是否存在、message type 是否匹配、frame count 是否非零，并
 2. 等待 ACK，并读取 ACK payload 中的 `saved_file`；等待期间不设硬超时，只周期性写进度日志。
 3. 调用 `/rosbag2_recorder/stop` 停止当前 recording。
 4. 保存主控侧 `.npz`、`manifest.json` 和告警统计。
+5. `done` 表示所有 required finish 操作完成。若任一 required sensor finish 失败，
+   manifest 使用 `status: "failed"`，记录 `failure_stage`、`failure_reason`、
+   per-sensor command result 和已有 `saved_file`，并停止系统。
 
 ### `x`: discard demo
 
 1. 向 FT300S/XenseTacSensor 发送 `DEMO_DISCARD_REQ`。
 2. 调用 `/rosbag2_recorder/stop` 停止当前 recording。
 3. 丢弃主控侧 demo buffer，只保留 controller log。
+4. `discarded` 只表示用户发起的 discard transaction 成功完成。若 required sensor
+   discard 或 rosbag stop 失败，manifest 使用 `status: "failed"`，记录 per-sensor /
+   rosbag command result，并停止系统。
 
 ### `q`: stop all
 

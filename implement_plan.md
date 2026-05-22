@@ -30,9 +30,9 @@
 - ZMQ receiver 从启动后持续 drain socket；demo 外数据不写入 demo buffer，但不会停读，包括 `d/x` 后回到 `WAIT_START` 的 demo 间隔。
 - 主控启动时等待 ZMQ 首个合法 frame、等待 FT300S/XenseTacSensor UDS 连接和 `INIT_READY`。
 - `s`：创建或恢复 demo，发送两个传感器 `START_REQ`，先验证 required RealSense image topics readiness，首次 segment 调用 rosbag2 `record`，随后调用 `resume`。
-- `p`：发送两个传感器 `PAUSE_REQ`，调用 rosbag2 `pause`，不再用 `stop` 暂停。
-- `d`：进入 `FINALIZING`，发送 `DEMO_DONE_REQ`，等待 ACK 和 `saved_file`；传感器 flush 不设硬超时，只周期性写进度日志；随后 stop rosbag，使用实际 rosbag URI 做 required image topic metadata post-check，并保存 `.npz`/manifest。post-check 失败时 status 为 `failed`。
-- `x`：发送 `DEMO_DISCARD_REQ`，stop rosbag，丢弃当前 demo buffer。
+- `p`：发送两个传感器 `PAUSE_REQ`，调用 rosbag2 `pause`，不再用 `stop` 暂停；若任一 required sensor pause 失败，写 `failed` manifest、记录 per-sensor command result，并进入 `ERROR -> STOPPING -> STOPPED`。
+- `d`：进入 `FINALIZING`，发送 `DEMO_DONE_REQ`，等待 ACK 和 `saved_file`；传感器 flush 不设硬超时，只周期性写进度日志；随后 stop rosbag，使用实际 rosbag URI 做 required image topic metadata post-check，并保存 `.npz`/manifest。只有所有 required finish 操作成功时 status 才为 `done`；sensor finish 失败或 post-check 失败时 status 为 `failed`，并记录 command result 或 post-check result。
+- `x`：发送 `DEMO_DISCARD_REQ`，stop rosbag，丢弃当前 demo buffer；只有用户 discard transaction 成功完成时 status 才为 `discarded`，sensor discard 或 rosbag stop 失败时 status 为 `failed`。
 - `q`：停止 rosbag、传感器、ZMQ、RealSense metadata monitor 和子进程。
 - RealSense stdout/stderr 中检测到 `Hardware Error` 或 `Depth stream start failure` 时，会向主控命令队列投递 fatal event；若当前为 `COLLECTING`，先自动暂停，再重启 RealSense camera launch。
 
@@ -250,6 +250,13 @@ MainController 负责多传感器 start/resume 事务协调。FT300S 和 XenseTa
 的 sensor 发送 `DEMO_DISCARD_REQ` 回滚，清空当前 demo context，并把 manifest
 状态写成 `failed`。`discarded` 仅用于用户 `x` 命令成功完成；start/resume
 事务失败即使用 discard 命令回滚 sensor，也不是用户放弃。
+
+非 start/resume 的 command transaction 也由 MainController 统一记录结果：`PAUSE_REQ`、
+`DEMO_DONE_REQ`、用户 `DEMO_DISCARD_REQ` 任一 required sensor 返回 `ERROR` 或超时时，
+failed manifest 记录 `failure_stage`、`failure_reason` 和 per-sensor command result。
+pause/discard 失败会进入 `ERROR -> STOPPING -> STOPPED`，避免主控状态与物理 sensor 状态
+不一致。`done` 表示 required finish 操作全部完成；`discarded` 表示用户 discard 成功完成；
+`failed` 表示系统或 command transaction 未成功。
 
 RealSense image topic list 是正式采集的权威 required list。formal 模式默认要求
 `cam1` 到 `cam4` 的 color `image_raw` 和 `aligned_depth_to_color/image_raw` 共 8 个
