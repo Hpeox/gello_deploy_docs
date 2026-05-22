@@ -16,7 +16,7 @@
 - 依赖声明：`package.xml` 已补充 `rosbag2_interfaces`、`realsense2_camera_msgs`、`python3-zmq`、`python3-numpy`。
 - `config.py`：集中定义默认路径、ZMQ endpoint、UDS socket、频率阈值、RealSense metadata topic、required image topic、formal/debug_degraded capture mode、rosbag count-skew threshold 和 fatal error pattern。
 - `main.py`：实现 CLI、命令队列、主状态机、demo start/pause/done/discard/stop 流程，以及 RealSense fatal error 自动暂停和重启路径。
-- `uds_client.py`：实现 FT300S/XenseTacSensor 共用 UDS client，包含协议 pack/unpack、自动连接、后台接收、`INIT_READY` 等待、ACK 等待和无硬超时 flush 等待。
+- `uds_client.py`：实现 FT300S/XenseTacSensor 共用 UDS client，包含协议 pack/unpack、自动连接、后台接收、`INIT_READY` 等待、ACK 等待、断连唤醒 pending ACK waiter 和可配置 flush timeout。
 - `zmq_telemetry.py`：在 MainController 内独立实现 ZMQ 504-byte telemetry frame 解包和 always-on receiver，不 import `Zmq_Ref`。
 - `realsense_metadata.py`：实现 RealSense metadata 订阅与 JSON 解析，输出 `frame_number`、`header.stamp`、`frame_timestamp`、`hw_timestamp` 等轻量 timing event，不订阅 `image_raw`。
 - `realsense_image_guard.py`：定义 RealSense image topic baseline、readiness result 和 rosbag metadata post-check。
@@ -31,7 +31,7 @@
 - 主控启动时等待 ZMQ 首个合法 frame、等待 FT300S/XenseTacSensor UDS 连接和 `INIT_READY`。
 - `s`：创建或恢复 demo，发送两个传感器 `START_REQ`，先验证 required RealSense image topics readiness，首次 segment 调用 rosbag2 `record`，随后调用 `resume`。
 - `p`：发送两个传感器 `PAUSE_REQ`，调用 rosbag2 `pause`，不再用 `stop` 暂停；若任一 required sensor pause 失败，写 `failed` manifest、记录 per-sensor command result，并进入 `ERROR -> STOPPING -> STOPPED`。
-- `d`：进入 `FINALIZING`，发送 `DEMO_DONE_REQ`，等待 ACK 和 `saved_file`；传感器 flush 不设硬超时，只周期性写进度日志；随后 stop rosbag，使用实际 rosbag URI 做 required image topic metadata post-check，并保存 `.npz`/manifest。只有 required sensors finished、rosbag stop 成功且 required post-check 通过时 status 才为 `done`；sensor finish、rosbag stop 或 post-check 失败时 status 为 `failed`，并记录 command result 或 post-check result。
+- `d`：进入 `FINALIZING`，发送 `DEMO_DONE_REQ`，在 `sensor_flush_timeout_s` 内等待 ACK 和 `saved_file`，期间周期性写进度日志；随后 stop rosbag，使用实际 rosbag URI 做 required image topic metadata post-check，并保存 `.npz`/manifest。只有 required sensors finished、rosbag stop 成功且 required post-check 通过时 status 才为 `done`；sensor finish、flush timeout、UDS disconnect、rosbag stop 或 post-check 失败时 status 为 `failed`，并记录 command result 或 post-check result。
 - `x`：发送 `DEMO_DISCARD_REQ`，stop rosbag，写 lightweight discarded manifest，然后丢弃当前 demo buffer；成功 discard 不保存高频 `.npz`，manifest 中 `npz` 为空并包含 `frame_counts`。只有用户 discard transaction 成功完成时 status 才为 `discarded`，sensor discard 或 rosbag stop 失败时 status 为 `failed`。
 - `q`：停止 rosbag、传感器、ZMQ、RealSense metadata monitor 和子进程。
 - RealSense stdout/stderr 中检测到 `Hardware Error` 或 `Depth stream start failure` 时，会向主控命令队列投递 fatal event；若当前为 `COLLECTING`，先自动暂停，再重启 RealSense camera launch。
@@ -163,7 +163,8 @@
 
 1. 发送 `DEMO_DONE_REQ`。
 2. 进入 `FINALIZING`，等待传感器 ACK 和 `saved_file`。
-3. 传感器 flush 不设硬超时，只周期性打印进度和写 log。
+3. 传感器 flush 使用可配置 `sensor_flush_timeout_s`，并周期性打印进度和写 log；
+   显式配置为 `none` / `unbounded` 时才允许无界等待。
 4. 调用 `/rosbag2_recorder/stop` 停止当前 recording。
 5. 若 rosbag `stop` 失败，跳过 RealSense rosbag post-check，写 `status: "failed"`
    manifest，保留可用 sensor `saved_file` 和 controller `.npz`，并进入
@@ -299,4 +300,5 @@ readiness 和 rosbag 记录校验；精确 fps/rate 验证留作后续扩展。
 
 - RealSense metadata topic 对当前启用相机可用。
 - 第一版只实现采集、监控和 manifest，不生成最终对齐数据集。
-- 传感器 flush 时间不固定，因此不设置硬超时，只做进度 watchdog。
+- 传感器 flush 时间不固定，默认使用有限 `sensor_flush_timeout_s`，同时保留进度
+  watchdog；只有显式配置 `none` / `unbounded` 时才允许无界等待。

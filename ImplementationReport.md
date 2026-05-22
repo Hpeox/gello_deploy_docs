@@ -318,10 +318,34 @@ Initial relevant repository status: all relevant repositories were clean before 
   - outer docs repository: report update is committed separately because a commit cannot contain its own hash.
 - Notes: `done` now requires sensor finish, rosbag stop, and required post-check success. Rosbag pause/stop failures write failed manifests with detailed command results and route through fatal cleanup.
 
+### Task 14: UDS finalization wait must not hang forever
+
+- Status: done
+- Affected repositories: MainController, outer docs repository
+- Files changed:
+  - `MainController/src/main_controller/main_controller/uds_client.py`
+  - `MainController/src/main_controller/main_controller/main.py`
+  - `MainController/src/main_controller/main_controller/config.py`
+  - `MainController/src/main_controller/test/test_maincontroller_mock_runtime.py`
+  - `MainController/src/main_controller/README.md`
+  - `implement_plan.md`
+  - `ImplementationReport.md`
+- Tests added or modified:
+  - Added mock sensor mode that receives `DEMO_DONE_REQ` and sends neither ACK nor ERROR while keeping the socket open.
+  - Added mock sensor mode that closes the UDS connection after `DEMO_DONE_REQ`.
+  - Added finish coverage for bounded flush timeout (`ack_timeout`) and peer disconnect (`uds_disconnected`), both ending in `STOPPED` with failed manifests.
+- Tests run and results:
+  - `bash -lc 'source /home/robot/miniconda3/etc/profile.d/conda.sh; conda deactivate; python -m compileall MainController/src/main_controller/main_controller MainController/src/main_controller/test/test_maincontroller_mock_runtime.py'` passed.
+  - `bash -lc 'source /home/robot/miniconda3/etc/profile.d/conda.sh; conda deactivate; python -m pytest MainController/src/main_controller/test/test_maincontroller_mock_runtime.py -q -k "no_ack_times_out or peer_disconnect_wakes_ack_waiter or finish_partial_failure"'` passed outside the sandbox with approval because the mock UDS server needs Unix socket bind: `3 passed, 24 deselected in 4.88s`.
+- Commit hashes:
+  - MainController: `3b88ac50b87dd236193682ac57e74feec54f9105`
+  - outer docs repository: report update is committed separately because a commit cannot contain its own hash.
+- Notes: `RuntimeConfig.sensor_flush_timeout_s` defaults to a finite `300.0` seconds and can be set to `None` via CLI `--sensor-flush-timeout-s none` / `unbounded`. Peer disconnect and send/ACK timeout now populate structured command errors for manifest reporting.
+
 ## Current Work
 
-- Current task: task 14 pending
-- Current state: FixPlan tasks 1-13 are implemented, validated, and committed.
+- Current task: task 15 pending
+- Current state: FixPlan tasks 1-14 are implemented, validated, and committed.
 
 ## Final Validation
 
