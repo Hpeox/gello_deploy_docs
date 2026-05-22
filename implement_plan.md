@@ -241,15 +241,19 @@ demo 之外的数据进入环形缓冲或直接丢弃，但不能停止读。dem
   - RealSense 重启次数和时间点。
   - RealSense image readiness baseline 和 rosbag image metadata post-check 结果。
   - start/resume 事务失败时，写轻量 failed manifest，记录 `failure_stage`、
-    `failure_reason`、已 ACK `START_REQ` 的 sensor、`DEMO_DISCARD_REQ`
-    rollback result，以及 rosbag record/resume 状态；不保存高频 `.npz`。
+    `failure_reason`、已 ACK `START_REQ` 的 sensor、rollback target sensor、
+    `DEMO_DISCARD_REQ` rollback result，以及 rosbag record/resume 状态；不保存高频 `.npz`。
 
 MainController 负责多传感器 start/resume 事务协调。FT300S 和 XenseTacSensor
 必须全部 ACK `START_REQ`，且 rosbag `record` / `resume` 必须成功，demo 才能进入
-`COLLECTING`。若后续 sensor 或 rosbag 步骤失败，MainController 对已 ACK start
-的 sensor 发送 `DEMO_DISCARD_REQ` 回滚，清空当前 demo context，并把 manifest
-状态写成 `failed`。`discarded` 仅用于用户 `x` 命令成功完成；start/resume
-事务失败即使用 discard 命令回滚 sensor，也不是用户放弃。
+`COLLECTING`。若新 demo start 的后续 sensor 或 rosbag 步骤失败，MainController
+对已 ACK start 的 sensor 发送 `DEMO_DISCARD_REQ` 回滚。若 paused resume 失败，
+rollback target 是所有已经持有 paused demo context 的 required sensor，不限于本次
+resume 已 ACK `START_REQ` 的 sensor。rollback 全部确认后清空当前 demo context 并回到
+`WAIT_START`；若任一 rollback target 无法确认 discard，或 rosbag stop cleanup 失败，
+则写入 `rollback_unconfirmed_sensors` 并进入 `ERROR -> STOPPING -> STOPPED`。所有
+start/resume 事务失败的 manifest 状态均为 `failed`。`discarded` 仅用于用户 `x`
+命令成功完成；start/resume 事务失败即使用 discard 命令回滚 sensor，也不是用户放弃。
 
 非 start/resume 的 command transaction 也由 MainController 统一记录结果：`PAUSE_REQ`、
 `DEMO_DONE_REQ`、用户 `DEMO_DISCARD_REQ` 任一 required sensor 返回 `ERROR` 或超时时，

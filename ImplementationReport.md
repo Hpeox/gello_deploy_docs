@@ -272,10 +272,33 @@ Initial relevant repository status: all relevant repositories were clean before 
   - outer docs repository: report update is committed separately because a commit cannot contain its own hash.
 - Notes: Start/resume rollback remains task 4. This task covers non-start command transactions and keeps `done`, `discarded`, and `failed` semantics distinct.
 
+### Task 12: Paused resume rollback must invalidate every paused demo sensor
+
+- Status: done
+- Affected repositories: MainController, outer docs repository
+- Files changed:
+  - `MainController/src/main_controller/main_controller/main.py`
+  - `MainController/src/main_controller/test/test_maincontroller_mock_runtime.py`
+  - `MainController/src/main_controller/README.md`
+  - `implement_plan.md`
+  - `ImplementationReport.md`
+- Tests added or modified:
+  - Updated paused resume failure coverage so Xense receives `DEMO_DISCARD_REQ` after returning `ERROR` to resume `START_REQ`.
+  - Added paused resume failure coverage where FT300S fails before Xense receives `START_REQ`; both paused-context sensors receive discard rollback.
+  - Added unconfirmed rollback coverage where a discard rollback returns `ERROR`; manifest records `rollback_unconfirmed_sensors` and the controller ends in `STOPPED`.
+  - Preserved fresh-start rollback coverage so a sensor that never owned the new demo is not discarded unnecessarily.
+- Tests run and results:
+  - `bash -lc 'source /home/robot/miniconda3/etc/profile.d/conda.sh; conda deactivate; python -m compileall MainController/src/main_controller/main_controller MainController/src/main_controller/test/test_maincontroller_mock_runtime.py'` passed.
+  - `bash -lc 'source /home/robot/miniconda3/etc/profile.d/conda.sh; conda deactivate; python -m pytest MainController/src/main_controller/test/test_maincontroller_mock_runtime.py -q -k "start_transaction_rolls_back or resume_transaction_failure or rosbag_resume_failure or realsense_readiness_failure"'` passed outside the sandbox with approval because the mock UDS server needs Unix socket bind: `5 passed, 18 deselected in 7.72s`.
+- Commit hashes:
+  - MainController: `12da18df7da2e2188689299abe5d666c92323265`
+  - outer docs repository: report update is committed separately because a commit cannot contain its own hash.
+- Notes: Fresh-start rollback remains scoped to sensors that ACKed `START_REQ`; paused-resume rollback targets every required sensor that already held the paused demo context. Unconfirmed rollback cleanup routes through `ERROR -> STOPPING -> STOPPED`.
+
 ## Current Work
 
-- Current task: none
-- Current state: all FixPlan tasks are implemented, validated, and committed.
+- Current task: task 13 pending
+- Current state: FixPlan tasks 1-12 are implemented, validated, and committed.
 
 ## Final Validation
 
