@@ -59,6 +59,10 @@
     current demo cache, transition to `WAIT_START`, and ACK with `saved_file`.
   - In both sensor services, accept `DEMO_DISCARD_REQ` from `PAUSED`, discard
     the current demo cache, transition to `WAIT_START`, and ACK.
+  - Update `FT300S/core/state.py` and `XenseTacSensor/core/state.py` so
+    `PAUSED -> WAIT_START` is valid for `DEMO_DONE_REQ` and
+    `DEMO_DISCARD_REQ`. The service handlers would otherwise accept the command
+    but fail during `_set_state(ServiceState.WAIT_START)`.
   - Preserve the intended pause semantics: pause stops sensor acquisition but
     does not clear the current demo cache. MainController and sensor modules
     should therefore remain synchronized after `p -> d` and `p -> x`.
@@ -159,10 +163,10 @@
     user-discarded status.
   - Define rosbag record/resume failure as part of the same start/resume
     transaction failure path.
-  - Explicitly state whether partial failures for `PAUSE_REQ`, `DEMO_DONE_REQ`,
-    and `DEMO_DISCARD_REQ` are handled in this task or deferred to a later
-    policy, so the documentation no longer relies on "both sensors always
-    succeed or fail together".
+  - State that this task owns start/resume transaction rollback. Partial
+    failures for `PAUSE_REQ`, `DEMO_DONE_REQ`, and `DEMO_DISCARD_REQ` are
+    handled separately by task 11, so the documentation no longer relies on
+    "both sensors always succeed or fail together".
 - Test plan:
   - Simulate FT300S start ACK followed by Xense start timeout/ERROR. Assert
     FT300S receives `DEMO_DISCARD_REQ`, MainController does not enter
@@ -193,9 +197,10 @@
 
 ### 5. ZMQ receiver fatal termination only logs a warning
 
-- Strategy: Fix code and tests. Treat ZMQ receiver fatal failure or disconnect as
-  an unrecoverable controller error because the receiver is required to drain
-  continuously for the lifetime of the system.
+- Strategy: Fix code and tests. Treat receiver-loop fatal termination as an
+  unrecoverable controller error because the receiver is required to drain
+  continuously for the lifetime of the system. Keep invalid individual
+  telemetry frames and ordinary drop warnings non-fatal.
 - Involved files:
   - `MainController/src/MainController/MainController/zmq_telemetry.py`
   - `MainController/src/MainController/MainController/main.py`
@@ -204,9 +209,9 @@
 - Main code changes:
   - Keep invalid individual telemetry frames as non-fatal: log the invalid frame
     and continue draining.
-  - Distinguish receiver-level fatal errors from invalid frames. Fatal examples
-    include poll/recv failures, unexpected callback failures, or endpoint
-    disconnect conditions that end the receiver loop.
+  - Distinguish receiver-loop fatal termination from invalid frames. Fatal
+    examples include poll/recv failures or unexpected callback failures that
+    cause `_run()` to leave its receive loop and close the socket.
   - Report receiver fatal errors to MainController as fatal events, not ordinary
     warnings.
   - MainController should log the fatal event, enter `ERROR`, run `stop_all()`,
@@ -221,46 +226,75 @@
   - This intentionally upgrades receiver termination from warning-only behavior
     to whole-system shutdown. If ZMQ cannot be drained, the acquisition quality
     guarantee is already broken.
+  - Do not treat ordinary ZMQ packet loss, invalid single frames, or silent
+    publisher gaps as task-5 fatal conditions unless a future heartbeat or
+    runtime no-frame policy makes those conditions deterministic.
   - Automatic receiver restart is deferred unless a later data-quality policy
     explicitly defines how to handle the resulting telemetry gap.
 - Suggested execution order: 5
 
 ### 6. RealSense four-camera image-stream baseline and rosbag post-check
 
-- Strategy: Add documentation TODOs for formal four-camera acquisition quality
-  gates based on a recorded normal-topic baseline.
-- Documentation TODOs:
-  - During development, capture one representative message from each of the 8
-    expected RealSense image topics and store the stable schema fields in a
-    config file.
-  - The baseline config should include topic name, message type, width, height,
-    encoding, step, and stream role such as color or depth.
-  - Treat the baseline config / required image topic list as the single
-    authoritative source for formal four-camera acquisition.
-  - Formal runs require all 4 cameras / 8 image topics by default.
-  - Add an explicit debug/degraded capture mode for partial camera/topic capture;
-    this mode must be enabled by an explicit parameter, and its configured
-    subset becomes the required topic list for that run.
-  - Before starting rosbag recording in formal runs, receive at least one frame
-    from each required image topic and compare its stable fields against the
-    baseline config.
-  - The readiness check should use the same required image topic list that
-    rosbag2 will record.
-  - After each recording ends, inspect rosbag metadata and verify that all 8
-    required image topics are present.
-  - Compare per-topic frame/message counts against expected duration/fps and
-    against each other.
-  - Define acceptable count skew threshold and record the readiness/post-check
-    result in controller logs / manifest.
+- Strategy: Fix code, tests, and docs. Make the required RealSense image topic
+  list an explicit controller configuration, use it as the authority for formal
+  four-camera recording, block formal recording when required image topics are
+  not ready, and validate the recorded rosbag metadata after each demo.
 - Involved files:
+  - `MainController/src/MainController/MainController/config.py`
+  - `MainController/src/MainController/MainController/main.py`
+  - `MainController/src/MainController/MainController/rosbag_control.py`
+  - `MainController/src/MainController/test/test_maincontroller_mock_runtime.py`
+  - a new MainController helper module for RealSense image-topic readiness /
+    rosbag metadata validation, if keeping this logic out of `main.py` is
+    cleaner
+  - a checked-in RealSense required-topic or baseline config file, if the topic
+    list should live outside Python config
   - `plan.md`
   - `implement_plan.md`
-  - future implementation may add a RealSense topic baseline config and touch
-    MainController rosbag/startup code
+- Main code changes:
+  - Define the formal required RealSense image topic list in one authoritative
+    place. By default, formal runs require all 4 cameras / 8 image topics:
+    color and aligned-depth image topics for `cam1` through `cam4`.
+  - Support an explicit debug/degraded capture mode for partial camera/topic
+    capture. This mode must be enabled by configuration or CLI flag; its
+    configured subset becomes the required topic list for that run.
+  - Add a pre-record readiness check before `/rosbag2_recorder/record` / 
+    `/resume`: verify each required image topic by receiving at least one 
+    message through a small helper node/function, or by an equivalent testable 
+    ROS topic readiness helper.
+  - Stable baseline fields should include topic name, message type, width,
+    height, encoding, step, and stream role such as color or depth. Do not store
+    raw full echo output or volatile timestamps as the baseline.
+  - Ensure the readiness check uses the same required image topic list that
+    rosbag2 will record.
+  - The post-check should use the actual rosbag URI/path recorded for the 
+    current demo, not a separately guessed output directory.
+  - If exact expected duration/fps is not reliably available in code yet, 
+    implement the first pass as required-topic presence plus pairwise count-skew 
+    validation using the configured threshold, and document expected-rate 
+    validation as a later extension.
+  - Record readiness and post-check results in controller logs and demo
+    manifest.
+  - In formal mode, missing required image topics or failed post-checks should
+    mark the demo as `failed` rather than `done`. Partial capture is allowed
+    only in explicit debug/degraded mode.
+- Documentation changes:
+  - Replace TODO wording with the formal acquisition rule: the required image
+    topic list is authoritative for RealSense recording.
+  - Document the difference between formal mode and debug/degraded subset mode.
+  - Document the pre-record readiness check, post-record rosbag metadata check,
+    count-skew threshold, and where results appear in logs / manifest.
+  - Clarify that metadata topics remain the realtime monitoring source, while
+    image topics are the readiness and rosbag recording source.
 - Test plan:
-  - No immediate test change.
-  - Future tests should mock image topic readiness, baseline comparison, and
-    rosbag metadata.
+  - Add focused tests for required-topic config generation in formal and
+    debug/degraded modes.
+  - Mock image-topic readiness and baseline comparison. Assert formal recording
+    is blocked when any required topic is missing or mismatched.
+  - Mock rosbag metadata after stop. Assert missing topics or unacceptable frame
+    count skew cause a failed manifest rather than `status: "done"`/ `completed`.
+  - Assert debug/degraded mode only requires its configured subset and records
+    that mode/subset in logs and manifest.
 - Risks and notes:
   - Check image topics for rosbag readiness; metadata topics remain the realtime
     monitoring source.
@@ -270,12 +304,13 @@
     and structurally correct before recording, but rosbag metadata remains the
     authoritative post-recording check.
   - Current code does not yet block recording startup on missing RealSense image
-    topics; this task defines the future readiness gate.
+    topics; this task makes that a formal runtime gate.
   - Formal mode should fail closed on missing required image topics; subset
     capture is allowed only through explicit debug/degraded mode configuration.
-  - The "frame counts are comparable" rule needs a concrete threshold before
-    implementation.
-- Suggested execution order: deferred after runtime correctness fixes
+  - The frame-count comparability threshold must be concrete in config before
+    the post-check is enabled.
+- Suggested execution order: after runtime correctness fixes, before final
+  hardware acceptance testing
 
 ### 7. Document drop-warning behavior for non-contiguous stream keys
 
@@ -329,6 +364,10 @@
   - For discarded demos, write `manifest.json` with `status: "discarded"` before
     `discard_demo()` clears `demo_store`.
   - User-initiated discard writes `status: "discarded"`.
+  - If user-initiated discard itself encounters a required system failure, such
+    as a required sensor refusing `DEMO_DISCARD_REQ` or rosbag stop failing, the
+    resulting manifest must use `status: "failed"` rather than
+    `status: "discarded"`.
   - Do not use `status: "discarded"` for start/resume transaction failures;
     those are handled by task 4 as failed demos.
   - Do not save high-frequency `.npz` files for discarded demos; record `npz` as
@@ -365,6 +404,9 @@
     in-memory buffer lengths before save.
   - Keep `discarded` and `failed` separate: `discarded` expresses user intent,
     while `failed` expresses an unsuccessful system transaction.
+  - `discarded` means the user-requested discard transaction completed. If the
+    discard transaction fails, record `failed` with failure details instead of
+    using the successful discard status.
   - Start/resume transaction failure is owned by task 4 and should not be routed
     through the user-discard manifest path except for shared helper code.
   - Finding 14 is merged into this task as the document-policy clarification for
@@ -429,3 +471,62 @@
   - `TableBuffer.append()` already makes equal in-memory field lengths likely,
     but the saved artifact should be asserted directly.
 - Suggested execution order: with test hardening tasks
+
+### 11. Partial failures for pause, finish, and discard commands
+
+- Strategy: Fix code and tests. Define and implement deterministic handling when
+  `PAUSE_REQ`, `DEMO_DONE_REQ`, or `DEMO_DISCARD_REQ` succeeds on one required
+  sensor but returns `ERROR` or times out on another. These command paths must
+  not silently leave MainController state inconsistent with physical sensor
+  state, and must not save a successful manifest when required sensors failed.
+- Involved files:
+  - `MainController/src/MainController/MainController/main.py`
+  - `MainController/src/MainController/MainController/uds_client.py`
+  - `MainController/src/MainController/test/test_maincontroller_mock_runtime.py`
+  - `plan.md`
+  - `implement_plan.md`
+  - `MainController/src/MainController/README.md`
+- Main code changes:
+  - Extend the UDS command result path so relevant sensor `ERROR` responses are
+    surfaced to the command caller instead of being only logged as asynchronous
+    warnings.
+  - For `pause_demo()`, if any required sensor fails `PAUSE_REQ`, record a
+    command failure and enter a deterministic recovery path instead of silently
+    leaving one sensor collecting while MainController is `PAUSED`.
+  - For `finish_demo()`, if any required sensor fails `DEMO_DONE_REQ`, do not
+    write `status: "done"`. Record `status: "failed"` with `failure_stage`,
+    `failure_reason`, per-sensor command results, and any available
+    `saved_file` values.
+  - For `discard_demo()`, user intent is discard, but if a required sensor
+    discard or rosbag stop fails, write `status: "failed"` rather than
+    `status: "discarded"`.
+  - Ensure every failure path clears or preserves `demo_store`,
+    `rosbag_record_started`, and `rosbag_uri` according to the recorded terminal
+    state, so the next user command cannot continue from an ambiguous context.
+  - Reuse the lightweight failed-manifest helper introduced for task 4 where
+    practical, but keep failed status distinct from user-discarded status.
+- Documentation changes:
+  - State that `done` means all required finish operations completed.
+  - State that `discarded` means user-initiated discard completed.
+  - State that `failed` covers system transaction failures during pause, finish,
+    discard, start/resume rollback, or rosbag control.
+  - Document that per-sensor command results are recorded for failed command
+    transactions.
+- Test plan:
+  - Simulate `PAUSE_REQ` ACK from one sensor and timeout/ERROR from the other;
+    assert MainController does not silently leave an ambiguous successful pause.
+  - Simulate `DEMO_DONE_REQ` ACK from one sensor and timeout/ERROR from the
+    other; assert no `status: "done"` manifest is written and a failed manifest
+    records per-sensor results.
+  - Simulate `DEMO_DISCARD_REQ` failure after user `x`; assert the manifest uses
+    `status: "failed"`, not `status: "discarded"`.
+  - Verify relevant sensor `ERROR` responses wake ACK waiters and are visible to
+    command-level logic.
+- Risks and notes:
+  - This task intentionally handles non-start/resume partial failures; start and
+    resume transaction rollback remain owned by task 4.
+  - Do not introduce automatic pause/abort data-quality policy here. This task
+    only handles explicit command transaction failures.
+  - Keep `discarded` and `failed` separate: `discarded` expresses completed user
+    intent, while `failed` expresses an unsuccessful system transaction.
+- Suggested execution order: after task 4, before task 8
