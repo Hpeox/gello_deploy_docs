@@ -32,7 +32,7 @@
 - `s`：创建或恢复 demo，发送两个传感器 `START_REQ`，先验证 required RealSense image topics readiness，首次 segment 调用 rosbag2 `record`，随后调用 `resume`。
 - `p`：发送两个传感器 `PAUSE_REQ`，调用 rosbag2 `pause`，不再用 `stop` 暂停；若任一 required sensor pause 失败，写 `failed` manifest、记录 per-sensor command result，并进入 `ERROR -> STOPPING -> STOPPED`。
 - `d`：进入 `FINALIZING`，发送 `DEMO_DONE_REQ`，等待 ACK 和 `saved_file`；传感器 flush 不设硬超时，只周期性写进度日志；随后 stop rosbag，使用实际 rosbag URI 做 required image topic metadata post-check，并保存 `.npz`/manifest。只有所有 required finish 操作成功时 status 才为 `done`；sensor finish 失败或 post-check 失败时 status 为 `failed`，并记录 command result 或 post-check result。
-- `x`：发送 `DEMO_DISCARD_REQ`，stop rosbag，丢弃当前 demo buffer；只有用户 discard transaction 成功完成时 status 才为 `discarded`，sensor discard 或 rosbag stop 失败时 status 为 `failed`。
+- `x`：发送 `DEMO_DISCARD_REQ`，stop rosbag，写 lightweight discarded manifest，然后丢弃当前 demo buffer；成功 discard 不保存高频 `.npz`，manifest 中 `npz` 为空并包含 `frame_counts`。只有用户 discard transaction 成功完成时 status 才为 `discarded`，sensor discard 或 rosbag stop 失败时 status 为 `failed`。
 - `q`：停止 rosbag、传感器、ZMQ、RealSense metadata monitor 和子进程。
 - RealSense stdout/stderr 中检测到 `Hardware Error` 或 `Depth stream start failure` 时，会向主控命令队列投递 fatal event；若当前为 `COLLECTING`，先自动暂停，再重启 RealSense camera launch。
 
@@ -236,7 +236,7 @@ demo 之外的数据进入环形缓冲或直接丢弃，但不能停止读。dem
   - demo 起止时间。
   - rosbag URI/segment。
   - FT300S/XenseTacSensor `saved_file`。
-  - 各 `.npz` 路径和帧数。
+  - 各 `.npz` 路径和 `frame_counts`。discarded /部分 failed manifest 可以不保存高频 `.npz`，但仍记录 buffer 清空前的 frame count summary。
   - 丢帧告警统计。
   - RealSense 重启次数和时间点。
   - RealSense image readiness baseline 和 rosbag image metadata post-check 结果。

@@ -209,8 +209,10 @@ topics 是否存在、message type 是否匹配、frame count 是否非零，并
 
 1. 向 FT300S/XenseTacSensor 发送 `DEMO_DISCARD_REQ`。
 2. 调用 `/rosbag2_recorder/stop` 停止当前 recording。
-3. 丢弃主控侧 demo buffer，只保留 controller log。
-4. `discarded` 只表示用户发起的 discard transaction 成功完成。若 required sensor
+3. 写入 lightweight `manifest.json`，`status: "discarded"`，包含 summary fields 和
+   `frame_counts`，但 `npz` 记录为空且不保存高频 `.npz` artifacts。
+4. 丢弃主控侧 demo buffer。
+5. `discarded` 只表示用户发起的 discard transaction 成功完成。若 required sensor
    discard 或 rosbag stop 失败，manifest 使用 `status: "failed"`，记录 per-sensor /
    rosbag command result，并停止系统。
 

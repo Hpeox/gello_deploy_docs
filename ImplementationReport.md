@@ -189,13 +189,27 @@ Initial relevant repository status: all relevant repositories were clean before 
 
 ### Task 8: Manifest frame counts and discarded-demo status record
 
-- Status: pending
+- Status: done
 - Affected repositories: MainController, outer docs repository
-- Files changed: none yet
-- Tests added or modified: none yet
-- Tests run and results: none yet
-- Commit hashes: none yet
-- Notes: Discard writes lightweight `manifest.json`; no high-frequency `.npz`.
+- Files changed:
+  - `MainController/src/MainController/MainController/buffers.py`
+  - `MainController/src/MainController/MainController/main.py`
+  - `MainController/src/MainController/test/test_maincontroller_mock_runtime.py`
+  - `MainController/src/MainController/README.md`
+  - `plan.md`
+  - `implement_plan.md`
+  - `ImplementationReport.md`
+- Tests added or modified:
+  - Added completed-demo `frame_counts` assertions against saved `.npz` primary field lengths.
+  - Updated discard flow coverage to assert a lightweight `status: "discarded"` manifest, empty `npz`, frame counts, and no high-frequency `.npz` artifacts.
+- Tests run and results:
+  - `bash -lc 'source /home/robot/miniconda3/etc/profile.d/conda.sh; conda deactivate; python -m compileall MainController/src/MainController/MainController MainController/src/MainController/test/test_maincontroller_mock_runtime.py'` passed.
+  - `bash -lc 'source /home/robot/miniconda3/etc/profile.d/conda.sh; conda deactivate; python -m pytest MainController/src/MainController/test/test_maincontroller_core.py -q'` passed: `9 passed in 0.32s`.
+  - `bash -lc 'source /home/robot/miniconda3/etc/profile.d/conda.sh; conda deactivate; python -m pytest MainController/src/MainController/test/test_maincontroller_mock_runtime.py -q'` passed outside the sandbox with approval because the mock UDS server needs Unix socket bind: `21 passed in 23.20s`.
+- Commit hashes:
+  - MainController: `a8b29ad513855376725b4964bcc52911d244f122`
+  - outer docs repository: report update is committed separately because a commit cannot contain its own hash.
+- Notes: Discard writes lightweight `manifest.json`; no high-frequency `.npz`. `discarded` remains reserved for completed user discard, while failed discard transactions are recorded as `failed` by task 11.
 
 ### Task 9: Replace tautological ZMQ buffer isolation assertion
 
@@ -245,7 +259,7 @@ Initial relevant repository status: all relevant repositories were clean before 
 ## Current Work
 
 - Current task: none
-- Current state: Task 11 MainController changes committed; docs/report checkpoint pending outer docs commit.
+- Current state: Task 8 MainController changes committed; docs/report checkpoint pending outer docs commit.
 
 ## Unresolved Risks and Follow-up Notes
 
