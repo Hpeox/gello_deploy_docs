@@ -4,7 +4,7 @@
 
 `MainController` 做成 ROS2 `ament_python` 包，但主体按普通 Python 控制程序设计。通过 `ros2 run MainController main_controller` 启动，内部使用线程、队列、子进程管理、UDS socket、ZMQ 和少量 rclpy service/subscriber。
 
-主控不订阅 RealSense `image_raw`。实时监控依赖 `/camX/camera/color/metadata` 和 `/camX/camera/depth/metadata`；rosbag2 仍负责记录 image topic。ZMQ receiver 必须从主控启动后一直读取，直到主控退出。
+主控不持续订阅 RealSense `image_raw`。实时监控依赖 `/camX/camera/color/metadata` 和 `/camX/camera/depth/metadata`；开始或恢复录制前会短暂订阅 required image topics 做 readiness baseline，rosbag2 仍负责记录 image topic。ZMQ receiver 必须从主控启动后一直读取，直到主控退出。
 
 ## 当前已实现内容
 
@@ -14,12 +14,13 @@
 
 - 包入口：`setup.py` 已新增 `main_controller = MainController.main:main`。
 - 依赖声明：`package.xml` 已补充 `rosbag2_interfaces`、`realsense2_camera_msgs`、`python3-zmq`、`python3-numpy`。
-- `config.py`：集中定义默认路径、ZMQ endpoint、UDS socket、频率阈值、RealSense metadata topic 和 fatal error pattern。
+- `config.py`：集中定义默认路径、ZMQ endpoint、UDS socket、频率阈值、RealSense metadata topic、required image topic、formal/debug_degraded capture mode、rosbag count-skew threshold 和 fatal error pattern。
 - `main.py`：实现 CLI、命令队列、主状态机、demo start/pause/done/discard/stop 流程，以及 RealSense fatal error 自动暂停和重启路径。
 - `uds_client.py`：实现 FT300S/XenseTacSensor 共用 UDS client，包含协议 pack/unpack、自动连接、后台接收、`INIT_READY` 等待、ACK 等待和无硬超时 flush 等待。
 - `zmq_telemetry.py`：在 MainController 内独立实现 ZMQ 504-byte telemetry frame 解包和 always-on receiver，不 import `Zmq_Ref`。
 - `realsense_metadata.py`：实现 RealSense metadata 订阅与 JSON 解析，输出 `frame_number`、`header.stamp`、`frame_timestamp`、`hw_timestamp` 等轻量 timing event，不订阅 `image_raw`。
-- `rosbag_control.py`：封装 `/rosbag2_recorder/record`、`/resume`、`/pause`、`/stop` service call，并已确认当前 ROS2 接口字段匹配。
+- `realsense_image_guard.py`：定义 RealSense image topic baseline、readiness result 和 rosbag metadata post-check。
+- `rosbag_control.py`：封装 `/rosbag2_recorder/record`、`/resume`、`/pause`、`/stop` service call，并提供 image readiness / recorded metadata validation 入口。
 - `processes.py`：实现子进程启动、日志捕获、fatal pattern 检测、SIGINT/SIGTERM/SIGKILL 停止和重启。
 - `drop_monitor.py`：实现 frame/seq/frame_number 连续性和帧间隔告警检测。
 - `buffers.py`：实现 controller JSONL log、demo `.npz` buffer 和 manifest 写入。
@@ -28,9 +29,9 @@
 
 - ZMQ receiver 从启动后持续 drain socket；demo 外数据不写入 demo buffer，但不会停读，包括 `d/x` 后回到 `WAIT_START` 的 demo 间隔。
 - 主控启动时等待 ZMQ 首个合法 frame、等待 FT300S/XenseTacSensor UDS 连接和 `INIT_READY`。
-- `s`：创建或恢复 demo，发送两个传感器 `START_REQ`，首次 segment 调用 rosbag2 `record`，随后调用 `resume`。
+- `s`：创建或恢复 demo，发送两个传感器 `START_REQ`，先验证 required RealSense image topics readiness，首次 segment 调用 rosbag2 `record`，随后调用 `resume`。
 - `p`：发送两个传感器 `PAUSE_REQ`，调用 rosbag2 `pause`，不再用 `stop` 暂停。
-- `d`：进入 `FINALIZING`，发送 `DEMO_DONE_REQ`，等待 ACK 和 `saved_file`；传感器 flush 不设硬超时，只周期性写进度日志；随后 stop rosbag 并保存 `.npz`/manifest。
+- `d`：进入 `FINALIZING`，发送 `DEMO_DONE_REQ`，等待 ACK 和 `saved_file`；传感器 flush 不设硬超时，只周期性写进度日志；随后 stop rosbag，使用实际 rosbag URI 做 required image topic metadata post-check，并保存 `.npz`/manifest。post-check 失败时 status 为 `failed`。
 - `x`：发送 `DEMO_DISCARD_REQ`，stop rosbag，丢弃当前 demo buffer。
 - `q`：停止 rosbag、传感器、ZMQ、RealSense metadata monitor 和子进程。
 - RealSense stdout/stderr 中检测到 `Hardware Error` 或 `Depth stream start failure` 时，会向主控命令队列投递 fatal event；若当前为 `COLLECTING`，先自动暂停，再重启 RealSense camera launch。
@@ -230,6 +231,7 @@ demo 之外的数据进入环形缓冲或直接丢弃，但不能停止读。dem
   - 各 `.npz` 路径和帧数。
   - 丢帧告警统计。
   - RealSense 重启次数和时间点。
+  - RealSense image readiness baseline 和 rosbag image metadata post-check 结果。
   - start/resume 事务失败时，写轻量 failed manifest，记录 `failure_stage`、
     `failure_reason`、已 ACK `START_REQ` 的 sensor、`DEMO_DISCARD_REQ`
     rollback result，以及 rosbag record/resume 状态；不保存高频 `.npz`。
@@ -240,6 +242,15 @@ MainController 负责多传感器 start/resume 事务协调。FT300S 和 XenseTa
 的 sensor 发送 `DEMO_DISCARD_REQ` 回滚，清空当前 demo context，并把 manifest
 状态写成 `failed`。`discarded` 仅用于用户 `x` 命令成功完成；start/resume
 事务失败即使用 discard 命令回滚 sensor，也不是用户放弃。
+
+RealSense image topic list 是正式采集的权威 required list。formal 模式默认要求
+`cam1` 到 `cam4` 的 color `image_raw` 和 `aligned_depth_to_color/image_raw` 共 8 个
+topic。`debug_degraded` 模式必须显式配置 topic 子集，且该子集必须来自 formal baseline。
+pre-record readiness 记录 topic、message type、width、height、encoding、step 和 stream
+role；缺失或 schema mismatch 会阻止录制并写 failed manifest。post-record check 从当前
+demo 的实际 rosbag URI 读取 metadata，验证 required topics 存在、类型匹配、count 非零，
+并检查 count skew 不超过配置阈值。metadata topics 只负责实时监控，image topics 负责
+readiness 和 rosbag 记录校验；精确 fps/rate 验证留作后续扩展。
 
 ## 测试计划
 

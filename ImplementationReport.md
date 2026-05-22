@@ -144,13 +144,34 @@ Initial relevant repository status: all relevant repositories were clean before 
 
 ### Task 6: RealSense four-camera image-stream baseline and rosbag post-check
 
-- Status: pending
+- Status: done
 - Affected repositories: MainController, outer docs repository
-- Files changed: none yet
-- Tests added or modified: none yet
-- Tests run and results: none yet
-- Commit hashes: none yet
-- Notes: Implement runtime code, tests, and docs; formal mode fails closed on missing required image topics.
+- Files changed:
+  - `MainController/src/MainController/MainController/config.py`
+  - `MainController/src/MainController/MainController/main.py`
+  - `MainController/src/MainController/MainController/rosbag_control.py`
+  - `MainController/src/MainController/MainController/realsense_image_guard.py`
+  - `MainController/src/MainController/test/test_maincontroller_core.py`
+  - `MainController/src/MainController/test/test_maincontroller_mock_runtime.py`
+  - `MainController/src/MainController/README.md`
+  - `plan.md`
+  - `implement_plan.md`
+  - `ImplementationReport.md`
+- Tests added or modified:
+  - Added formal required image-topic config coverage for 4 cameras / 8 image topics.
+  - Added explicit `debug_degraded` subset config coverage.
+  - Added rosbag metadata missing-topic/count-skew helper coverage.
+  - Added mock runtime coverage that missing formal image readiness blocks recording and writes a failed manifest.
+  - Added mock runtime coverage that rosbag image post-check failure marks the demo `failed`.
+  - Added mock runtime coverage that `debug_degraded` mode uses and records its configured subset.
+- Tests run and results:
+  - `bash -lc 'source /home/robot/miniconda3/etc/profile.d/conda.sh; conda deactivate; python -m compileall MainController/src/MainController/MainController MainController/src/MainController/test/test_maincontroller_core.py MainController/src/MainController/test/test_maincontroller_mock_runtime.py'` passed.
+  - `bash -lc 'source /home/robot/miniconda3/etc/profile.d/conda.sh; conda deactivate; python -m pytest MainController/src/MainController/test/test_maincontroller_core.py -q'` passed: `9 passed in 0.33s`.
+  - `bash -lc 'source /home/robot/miniconda3/etc/profile.d/conda.sh; conda deactivate; python -m pytest MainController/src/MainController/test/test_maincontroller_mock_runtime.py -q'` passed outside the sandbox with approval because the mock UDS server needs Unix socket bind: `18 passed in 18.65s`.
+- Commit hashes:
+  - MainController: `fe31d52bc7026e4f808576f08d86d475393b2a8c`
+  - outer docs repository: report update is committed separately because a commit cannot contain its own hash.
+- Notes: Formal mode fails closed on missing/mismatched required image topics. `debug_degraded` mode is explicit and uses only the configured subset. Demo manifests now include RealSense image readiness and rosbag image post-check results; post-check failure records `status: "failed"`.
 
 ### Task 7: Document drop-warning behavior for non-contiguous stream keys
 
@@ -205,7 +226,7 @@ Initial relevant repository status: all relevant repositories were clean before 
 ## Current Work
 
 - Current task: none
-- Current state: Task 5 MainController changes committed; report checkpoint pending outer docs commit.
+- Current state: Task 6 MainController changes committed; docs/report checkpoint pending outer docs commit.
 
 ## Unresolved Risks and Follow-up Notes
 

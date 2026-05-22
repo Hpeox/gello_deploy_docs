@@ -29,7 +29,8 @@
   - 用户不输入 `i`。
   - `s/p/d/x/q` 分别映射到 `START_REQ/PAUSE_REQ/DEMO_DONE_REQ/DEMO_DISCARD_REQ/STOP_REQ`。
 - RealSense 时间戳策略：
-  - 主控实时订阅 `/camX/camera/color/metadata` 和 `/camX/camera/depth/metadata`，不订阅 `image_raw`。
+  - 主控实时订阅 `/camX/camera/color/metadata` 和 `/camX/camera/depth/metadata`，不持续订阅 `image_raw`。
+  - 开始或恢复录制前，主控会对 required image topics 做一次短暂 readiness baseline 检查。
   - 实时丢帧监控使用 metadata 的 `frame_number`、`header.stamp`、`frame_timestamp`、`hw_timestamp`。
   - rosbag2 仍记录 image topic；离线可用 `tools/realsense_bag_compare.py` 验证 metadata 与 image header 的对应关系。
 
@@ -163,6 +164,19 @@ record/resume 状态。start/resume 事务失败不保存高频 `.npz`。`status
 `DEMO_DISCARD_REQ` 回滚，也必须记录为 `failed`。`PAUSE_REQ`、`DEMO_DONE_REQ`
 和用户 `DEMO_DISCARD_REQ` 的 partial failure 规则单独定义，不依赖“两个 sensor
 总是同时成功或失败”的假设。
+
+RealSense image topic list 是录制准入和 rosbag post-check 的权威来源。正式模式
+默认要求 4 台相机 / 8 个 image topics：`cam1` 到 `cam4` 的 color `image_raw` 和
+`aligned_depth_to_color/image_raw`。只有显式配置 `debug_degraded` 模式时，才允许使用
+配置中的 topic 子集；该子集成为本次运行的 required list。每次 rosbag `record` /
+`resume` 前，主控必须收到每个 required image topic 的至少一帧，并记录稳定 baseline
+字段：topic name、message type、width、height、encoding、step、stream role。缺失
+topic 或 baseline mismatch 会阻止正式录制，并写入 `status: "failed"` manifest。
+完成 demo 时，主控使用当前 demo 的实际 rosbag URI 读取 rosbag metadata，检查 required
+topics 是否存在、message type 是否匹配、frame count 是否非零，并要求 required topics
+之间的 count skew 不超过配置阈值。post-check 失败时 manifest 状态为 `failed`，不是
+`done`。metadata topics 仍是实时监控来源；image topics 是 readiness 与 rosbag recording
+校验来源。
 
 ### `p`: pause demo
 
