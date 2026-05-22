@@ -47,13 +47,29 @@ Initial relevant repository status: all relevant repositories were clean before 
 
 ### Task 2: PAUSED to finalizing/discarding has no real sensor ACK
 
-- Status: pending
-- Affected repositories: MainController, FT300S, XenseTacSensor
-- Files changed: none yet
-- Tests added or modified: none yet
-- Tests run and results: none yet
-- Commit hashes: none yet
-- Notes: Keep clean discard as `discarded`; system command failure remains `failed`.
+- Status: done
+- Affected repositories: MainController, FT300S, XenseTacSensor, outer docs repository
+- Files changed:
+  - `MainController/src/MainController/MainController/uds_client.py`
+  - `MainController/src/MainController/test/test_maincontroller_mock_runtime.py`
+  - `FT300S/core/service.py`
+  - `FT300S/core/state.py`
+  - `XenseTacSensor/core/service.py`
+  - `XenseTacSensor/core/state.py`
+  - `ImplementationReport.md`
+- Tests added or modified:
+  - Added mock runtime coverage for `s -> p -> d` returning to `WAIT_START`.
+  - Added mock runtime coverage for `s -> p -> x` returning to `WAIT_START`.
+  - Added UDS client coverage for a relevant sensor `ERROR` waking a no-timeout ACK waiter.
+- Tests run and results:
+  - `python -m pytest MainController/src/MainController/test/test_maincontroller_mock_runtime.py` failed before collection because the active Python environment has no `pytest` module. Environment failure, not a code failure.
+  - `python -m compileall MainController/src/MainController/MainController MainController/src/MainController/test/test_maincontroller_mock_runtime.py FT300S/core XenseTacSensor/core` passed.
+- Commit hashes:
+  - MainController: `7ca9023fa0c9719c408516e0df8649750d97fb66`
+  - FT300S: `b366fe25fff82373689b9e4a4258fe9451aa016b`
+  - XenseTacSensor: `7e9c18da927f74020e468d727c9886f1f44b6f35`
+  - outer docs repository: report update is committed separately because a commit cannot contain its own hash.
+- Notes: Sensor services now accept `DEMO_DONE_REQ` and `DEMO_DISCARD_REQ` from `PAUSED`, transition to `WAIT_START`, and ACK. UDS ACK waits now return failure when a relevant sensor `ERROR` arrives instead of waiting indefinitely.
 
 ### Task 3: Startup failure does not perform ERROR to STOPPING cleanup
 
@@ -148,7 +164,7 @@ Initial relevant repository status: all relevant repositories were clean before 
 ## Current Work
 
 - Current task: none
-- Current state: Task 1 MainController changes committed; report checkpoint pending outer docs commit.
+- Current state: Task 2 code changes committed; report checkpoint pending outer docs commit.
 
 ## Unresolved Risks and Follow-up Notes
 
