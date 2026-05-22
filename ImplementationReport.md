@@ -231,13 +231,21 @@ Initial relevant repository status: all relevant repositories were clean before 
 
 ### Task 10: Add npz field-length consistency assertions
 
-- Status: pending
+- Status: done
 - Affected repositories: MainController
-- Files changed: none yet
-- Tests added or modified: none yet
-- Tests run and results: none yet
-- Commit hashes: none yet
-- Notes: Check field lengths within each `.npz`, not across streams.
+- Files changed:
+  - `MainController/src/MainController/test/test_maincontroller_mock_runtime.py`
+  - `ImplementationReport.md`
+- Tests added or modified:
+  - Added `assert_npz_fields_same_length(npz)` helper.
+  - Applied it to `ft300_timestamps.npz`, `xense_timestamps.npz`, `realsense_metadata.npz`, and `zmq_telemetry.npz`.
+- Tests run and results:
+  - `bash -lc 'source /home/robot/miniconda3/etc/profile.d/conda.sh; conda deactivate; python -m compileall MainController/src/MainController/test/test_maincontroller_mock_runtime.py'` passed.
+  - `bash -lc 'source /home/robot/miniconda3/etc/profile.d/conda.sh; conda deactivate; python -m pytest MainController/src/MainController/test/test_maincontroller_mock_runtime.py -q'` passed outside the sandbox with approval because the mock UDS server needs Unix socket bind: `21 passed in 23.29s`.
+- Commit hashes:
+  - MainController: `f50751520ce29cfe5323c1b22de8e523b4fb9bfc`
+  - outer docs repository: report update is committed separately because a commit cannot contain its own hash.
+- Notes: Checks field lengths within each `.npz`, not across streams.
 
 ### Task 11: Partial failures for pause, finish, and discard commands
 
@@ -267,7 +275,7 @@ Initial relevant repository status: all relevant repositories were clean before 
 ## Current Work
 
 - Current task: none
-- Current state: Task 9 MainController changes committed; report checkpoint pending outer docs commit.
+- Current state: Task 10 MainController changes committed; report checkpoint pending outer docs commit.
 
 ## Unresolved Risks and Follow-up Notes
 
