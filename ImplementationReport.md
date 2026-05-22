@@ -14,7 +14,7 @@ If work is interrupted or context is compacted, resume by reading:
 ## Repository Boundaries
 
 - `/home/robot/Desktop/gello-deploy` - outer planning/docs repository
-- `/home/robot/Desktop/gello-deploy/MainController/src/MainController` - MainController repository
+- `/home/robot/Desktop/gello-deploy/MainController/src/main_controller` - MainController repository
 - `/home/robot/Desktop/gello-deploy/FT300S` - FT300S repository
 - `/home/robot/Desktop/gello-deploy/XenseTacSensor` - XenseTacSensor repository
 - `/home/robot/Desktop/gello-deploy/RealSense` - RealSense repository
@@ -28,16 +28,16 @@ Initial relevant repository status: all relevant repositories were clean before 
 - Status: done
 - Affected repositories: MainController, FT300S, XenseTacSensor, outer docs repository
 - Files changed:
-  - `MainController/src/MainController/MainController/uds_client.py`
-  - `MainController/src/MainController/MainController/main.py`
-  - `MainController/src/MainController/test/test_maincontroller_mock_runtime.py`
+  - `MainController/src/main_controller/main_controller/uds_client.py`
+  - `MainController/src/main_controller/main_controller/main.py`
+  - `MainController/src/main_controller/test/test_maincontroller_mock_runtime.py`
   - `ImplementationReport.md`
 - Tests added or modified:
   - Updated `MockUdsSensor` to use `FT300S.protocol.messages` for FT300S and `XenseTacSensor.protocol.messages` for Xense.
   - Added assertions that FT300S-bound messages use `b"F3"` and Xense-bound messages use `b"XS"`.
 - Tests run and results:
-  - `python -m pytest MainController/src/MainController/test/test_maincontroller_mock_runtime.py` failed before collection because the active Python environment has no `pytest` module. Environment failure, not a code failure.
-  - `python -m compileall MainController/src/MainController/MainController MainController/src/MainController/test/test_maincontroller_mock_runtime.py` passed.
+  - `python -m pytest MainController/src/main_controller/test/test_maincontroller_mock_runtime.py` failed before collection because the active Python environment has no `pytest` module. Environment failure, not a code failure.
+  - `python -m compileall MainController/src/main_controller/main_controller MainController/src/main_controller/test/test_maincontroller_mock_runtime.py` passed.
 - Commit hashes:
   - MainController: `e36c6b29d4482c965b75a9562bb0292e6b14f64f`
   - FT300S: no file changes
@@ -50,8 +50,8 @@ Initial relevant repository status: all relevant repositories were clean before 
 - Status: done
 - Affected repositories: MainController, FT300S, XenseTacSensor, outer docs repository
 - Files changed:
-  - `MainController/src/MainController/MainController/uds_client.py`
-  - `MainController/src/MainController/test/test_maincontroller_mock_runtime.py`
+  - `MainController/src/main_controller/main_controller/uds_client.py`
+  - `MainController/src/main_controller/test/test_maincontroller_mock_runtime.py`
   - `FT300S/core/service.py`
   - `FT300S/core/state.py`
   - `XenseTacSensor/core/service.py`
@@ -62,8 +62,8 @@ Initial relevant repository status: all relevant repositories were clean before 
   - Added mock runtime coverage for `s -> p -> x` returning to `WAIT_START`.
   - Added UDS client coverage for a relevant sensor `ERROR` waking a no-timeout ACK waiter.
 - Tests run and results:
-  - `python -m pytest MainController/src/MainController/test/test_maincontroller_mock_runtime.py` failed before collection because the active Python environment has no `pytest` module. Environment failure, not a code failure.
-  - `python -m compileall MainController/src/MainController/MainController MainController/src/MainController/test/test_maincontroller_mock_runtime.py FT300S/core XenseTacSensor/core` passed.
+  - `python -m pytest MainController/src/main_controller/test/test_maincontroller_mock_runtime.py` failed before collection because the active Python environment has no `pytest` module. Environment failure, not a code failure.
+  - `python -m compileall MainController/src/main_controller/main_controller MainController/src/main_controller/test/test_maincontroller_mock_runtime.py FT300S/core XenseTacSensor/core` passed.
 - Commit hashes:
   - MainController: `7ca9023fa0c9719c408516e0df8649750d97fb66`
   - FT300S: `b366fe25fff82373689b9e4a4258fe9451aa016b`
@@ -76,15 +76,15 @@ Initial relevant repository status: all relevant repositories were clean before 
 - Status: done
 - Affected repositories: MainController, outer docs repository
 - Files changed:
-  - `MainController/src/MainController/MainController/main.py`
-  - `MainController/src/MainController/test/test_maincontroller_mock_runtime.py`
+  - `MainController/src/main_controller/main_controller/main.py`
+  - `MainController/src/main_controller/test/test_maincontroller_mock_runtime.py`
   - `ImplementationReport.md`
 - Tests added or modified:
   - Added startup failure cleanup test covering `_wait_startup_ready()` failure after process/receiver setup.
   - Added managed-process startup rollback test covering failure while starting the second process.
 - Tests run and results:
-  - `python -m pytest MainController/src/MainController/test/test_maincontroller_mock_runtime.py` failed before collection because the active Python environment has no `pytest` module. Environment failure, not a code failure.
-  - `python -m compileall MainController/src/MainController/MainController MainController/src/MainController/test/test_maincontroller_mock_runtime.py` passed.
+  - `python -m pytest MainController/src/main_controller/test/test_maincontroller_mock_runtime.py` failed before collection because the active Python environment has no `pytest` module. Environment failure, not a code failure.
+  - `python -m compileall MainController/src/main_controller/main_controller MainController/src/main_controller/test/test_maincontroller_mock_runtime.py` passed.
 - Commit hashes:
   - MainController: `f2555f08db83bff70a375051ca7043e127421abb`
   - outer docs repository: report update is committed separately because a commit cannot contain its own hash.
@@ -95,9 +95,9 @@ Initial relevant repository status: all relevant repositories were clean before 
 - Status: done
 - Affected repositories: MainController, outer docs repository
 - Files changed:
-  - `MainController/src/MainController/MainController/main.py`
-  - `MainController/src/MainController/test/test_maincontroller_mock_runtime.py`
-  - `MainController/src/MainController/README.md`
+  - `MainController/src/main_controller/main_controller/main.py`
+  - `MainController/src/main_controller/test/test_maincontroller_mock_runtime.py`
+  - `MainController/src/main_controller/README.md`
   - `plan.md`
   - `implement_plan.md`
   - `ImplementationReport.md`
@@ -106,8 +106,8 @@ Initial relevant repository status: all relevant repositories were clean before 
   - Added paused resume transaction failure coverage that invalidates the paused demo and writes a failed manifest.
   - Added rosbag resume failure coverage that rolls back both started sensors and records failed rosbag state.
 - Tests run and results:
-  - `python -m pytest MainController/src/MainController/test/test_maincontroller_mock_runtime.py` failed before collection because the active Python environment has no `pytest` module. Environment failure, not a code failure.
-  - `python -m compileall MainController/src/MainController/MainController MainController/src/MainController/test/test_maincontroller_mock_runtime.py` passed.
+  - `python -m pytest MainController/src/main_controller/test/test_maincontroller_mock_runtime.py` failed before collection because the active Python environment has no `pytest` module. Environment failure, not a code failure.
+  - `python -m compileall MainController/src/main_controller/main_controller MainController/src/main_controller/test/test_maincontroller_mock_runtime.py` passed.
 - Commit hashes:
   - MainController: `2fd606fc4c9794816bfcd032c7693c38b27e123b`
   - outer docs repository: report update is committed separately because a commit cannot contain its own hash.
@@ -118,10 +118,10 @@ Initial relevant repository status: all relevant repositories were clean before 
 - Status: done
 - Affected repositories: MainController, outer docs repository
 - Files changed:
-  - `MainController/src/MainController/MainController/zmq_telemetry.py`
-  - `MainController/src/MainController/MainController/main.py`
-  - `MainController/src/MainController/test/test_maincontroller_core.py`
-  - `MainController/src/MainController/test/test_maincontroller_mock_runtime.py`
+  - `MainController/src/main_controller/main_controller/zmq_telemetry.py`
+  - `MainController/src/main_controller/main_controller/main.py`
+  - `MainController/src/main_controller/test/test_maincontroller_core.py`
+  - `MainController/src/main_controller/test/test_maincontroller_mock_runtime.py`
   - `ImplementationReport.md`
 - Tests added or modified:
   - Added receiver-level coverage that invalid ZMQ payloads call the warning path and the receiver continues to accept a later valid frame.
@@ -129,13 +129,13 @@ Initial relevant repository status: all relevant repositories were clean before 
   - Added controller coverage that ordinary ZMQ warning handling does not stop the controller.
   - Added controller coverage that a `zmq_fatal` command performs full cleanup and stops sensors, rosbag, receiver, RealSense monitor, and subprocesses.
 - Tests run and results:
-  - Previous interrupted validation used the active conda Python and `python -m pytest MainController/src/MainController/test/test_maincontroller_mock_runtime.py`, which failed with `No module named pytest`. That attempt is invalid for task validation because pytest was missing from that environment.
+  - Previous interrupted validation used the active conda Python and `python -m pytest MainController/src/main_controller/test/test_maincontroller_mock_runtime.py`, which failed with `No module named pytest`. That attempt is invalid for task validation because pytest was missing from that environment.
   - Valid MainController tests must be run from `/home/robot/Desktop/gello-deploy` after `conda deactivate`, using system Python:
-    - `conda deactivate && python -m pytest MainController/src/MainController/test/test_maincontroller_core.py -q`
-    - `conda deactivate && python -m pytest MainController/src/MainController/test/test_maincontroller_mock_runtime.py -q`
-  - `bash -lc 'source /home/robot/miniconda3/etc/profile.d/conda.sh; conda deactivate; python -m compileall MainController/src/MainController/MainController MainController/src/MainController/test/test_maincontroller_core.py MainController/src/MainController/test/test_maincontroller_mock_runtime.py'` passed.
-  - `bash -lc 'source /home/robot/miniconda3/etc/profile.d/conda.sh; conda deactivate; python -m pytest MainController/src/MainController/test/test_maincontroller_core.py -q'` passed: `6 passed in 0.32s`.
-  - The first sandboxed run of `bash -lc 'source /home/robot/miniconda3/etc/profile.d/conda.sh; conda deactivate; python -m pytest MainController/src/MainController/test/test_maincontroller_mock_runtime.py -q'` failed with `PermissionError: [Errno 1] Operation not permitted` while binding the mock UDS Unix socket. This was an environment/sandbox failure, not a code behavior failure.
+    - `conda deactivate && python -m pytest MainController/src/main_controller/test/test_maincontroller_core.py -q`
+    - `conda deactivate && python -m pytest MainController/src/main_controller/test/test_maincontroller_mock_runtime.py -q`
+  - `bash -lc 'source /home/robot/miniconda3/etc/profile.d/conda.sh; conda deactivate; python -m compileall MainController/src/main_controller/main_controller MainController/src/main_controller/test/test_maincontroller_core.py MainController/src/main_controller/test/test_maincontroller_mock_runtime.py'` passed.
+  - `bash -lc 'source /home/robot/miniconda3/etc/profile.d/conda.sh; conda deactivate; python -m pytest MainController/src/main_controller/test/test_maincontroller_core.py -q'` passed: `6 passed in 0.32s`.
+  - The first sandboxed run of `bash -lc 'source /home/robot/miniconda3/etc/profile.d/conda.sh; conda deactivate; python -m pytest MainController/src/main_controller/test/test_maincontroller_mock_runtime.py -q'` failed with `PermissionError: [Errno 1] Operation not permitted` while binding the mock UDS Unix socket. This was an environment/sandbox failure, not a code behavior failure.
   - The same mock runtime command rerun outside the sandbox with approval passed: `15 passed in 14.02s`.
 - Commit hashes:
   - MainController: `ad25c628a476ee5c3d0aea1ed7538909e8292264`
@@ -147,13 +147,13 @@ Initial relevant repository status: all relevant repositories were clean before 
 - Status: done
 - Affected repositories: MainController, outer docs repository
 - Files changed:
-  - `MainController/src/MainController/MainController/config.py`
-  - `MainController/src/MainController/MainController/main.py`
-  - `MainController/src/MainController/MainController/rosbag_control.py`
-  - `MainController/src/MainController/MainController/realsense_image_guard.py`
-  - `MainController/src/MainController/test/test_maincontroller_core.py`
-  - `MainController/src/MainController/test/test_maincontroller_mock_runtime.py`
-  - `MainController/src/MainController/README.md`
+  - `MainController/src/main_controller/main_controller/config.py`
+  - `MainController/src/main_controller/main_controller/main.py`
+  - `MainController/src/main_controller/main_controller/rosbag_control.py`
+  - `MainController/src/main_controller/main_controller/realsense_image_guard.py`
+  - `MainController/src/main_controller/test/test_maincontroller_core.py`
+  - `MainController/src/main_controller/test/test_maincontroller_mock_runtime.py`
+  - `MainController/src/main_controller/README.md`
   - `plan.md`
   - `implement_plan.md`
   - `ImplementationReport.md`
@@ -165,9 +165,9 @@ Initial relevant repository status: all relevant repositories were clean before 
   - Added mock runtime coverage that rosbag image post-check failure marks the demo `failed`.
   - Added mock runtime coverage that `debug_degraded` mode uses and records its configured subset.
 - Tests run and results:
-  - `bash -lc 'source /home/robot/miniconda3/etc/profile.d/conda.sh; conda deactivate; python -m compileall MainController/src/MainController/MainController MainController/src/MainController/test/test_maincontroller_core.py MainController/src/MainController/test/test_maincontroller_mock_runtime.py'` passed.
-  - `bash -lc 'source /home/robot/miniconda3/etc/profile.d/conda.sh; conda deactivate; python -m pytest MainController/src/MainController/test/test_maincontroller_core.py -q'` passed: `9 passed in 0.33s`.
-  - `bash -lc 'source /home/robot/miniconda3/etc/profile.d/conda.sh; conda deactivate; python -m pytest MainController/src/MainController/test/test_maincontroller_mock_runtime.py -q'` passed outside the sandbox with approval because the mock UDS server needs Unix socket bind: `18 passed in 18.65s`.
+  - `bash -lc 'source /home/robot/miniconda3/etc/profile.d/conda.sh; conda deactivate; python -m compileall MainController/src/main_controller/main_controller MainController/src/main_controller/test/test_maincontroller_core.py MainController/src/main_controller/test/test_maincontroller_mock_runtime.py'` passed.
+  - `bash -lc 'source /home/robot/miniconda3/etc/profile.d/conda.sh; conda deactivate; python -m pytest MainController/src/main_controller/test/test_maincontroller_core.py -q'` passed: `9 passed in 0.33s`.
+  - `bash -lc 'source /home/robot/miniconda3/etc/profile.d/conda.sh; conda deactivate; python -m pytest MainController/src/main_controller/test/test_maincontroller_mock_runtime.py -q'` passed outside the sandbox with approval because the mock UDS server needs Unix socket bind: `18 passed in 18.65s`.
 - Commit hashes:
   - MainController: `fe31d52bc7026e4f808576f08d86d475393b2a8c`
   - outer docs repository: report update is committed separately because a commit cannot contain its own hash.
@@ -192,10 +192,10 @@ Initial relevant repository status: all relevant repositories were clean before 
 - Status: done
 - Affected repositories: MainController, outer docs repository
 - Files changed:
-  - `MainController/src/MainController/MainController/buffers.py`
-  - `MainController/src/MainController/MainController/main.py`
-  - `MainController/src/MainController/test/test_maincontroller_mock_runtime.py`
-  - `MainController/src/MainController/README.md`
+  - `MainController/src/main_controller/main_controller/buffers.py`
+  - `MainController/src/main_controller/main_controller/main.py`
+  - `MainController/src/main_controller/test/test_maincontroller_mock_runtime.py`
+  - `MainController/src/main_controller/README.md`
   - `plan.md`
   - `implement_plan.md`
   - `ImplementationReport.md`
@@ -203,9 +203,9 @@ Initial relevant repository status: all relevant repositories were clean before 
   - Added completed-demo `frame_counts` assertions against saved `.npz` primary field lengths.
   - Updated discard flow coverage to assert a lightweight `status: "discarded"` manifest, empty `npz`, frame counts, and no high-frequency `.npz` artifacts.
 - Tests run and results:
-  - `bash -lc 'source /home/robot/miniconda3/etc/profile.d/conda.sh; conda deactivate; python -m compileall MainController/src/MainController/MainController MainController/src/MainController/test/test_maincontroller_mock_runtime.py'` passed.
-  - `bash -lc 'source /home/robot/miniconda3/etc/profile.d/conda.sh; conda deactivate; python -m pytest MainController/src/MainController/test/test_maincontroller_core.py -q'` passed: `9 passed in 0.32s`.
-  - `bash -lc 'source /home/robot/miniconda3/etc/profile.d/conda.sh; conda deactivate; python -m pytest MainController/src/MainController/test/test_maincontroller_mock_runtime.py -q'` passed outside the sandbox with approval because the mock UDS server needs Unix socket bind: `21 passed in 23.20s`.
+  - `bash -lc 'source /home/robot/miniconda3/etc/profile.d/conda.sh; conda deactivate; python -m compileall MainController/src/main_controller/main_controller MainController/src/main_controller/test/test_maincontroller_mock_runtime.py'` passed.
+  - `bash -lc 'source /home/robot/miniconda3/etc/profile.d/conda.sh; conda deactivate; python -m pytest MainController/src/main_controller/test/test_maincontroller_core.py -q'` passed: `9 passed in 0.32s`.
+  - `bash -lc 'source /home/robot/miniconda3/etc/profile.d/conda.sh; conda deactivate; python -m pytest MainController/src/main_controller/test/test_maincontroller_mock_runtime.py -q'` passed outside the sandbox with approval because the mock UDS server needs Unix socket bind: `21 passed in 23.20s`.
 - Commit hashes:
   - MainController: `a8b29ad513855376725b4964bcc52911d244f122`
   - outer docs repository: report update is committed separately because a commit cannot contain its own hash.
@@ -216,14 +216,14 @@ Initial relevant repository status: all relevant repositories were clean before 
 - Status: done
 - Affected repositories: MainController
 - Files changed:
-  - `MainController/src/MainController/test/test_maincontroller_mock_runtime.py`
+  - `MainController/src/main_controller/test/test_maincontroller_mock_runtime.py`
   - `ImplementationReport.md`
 - Tests added or modified:
   - Replaced the tautological `or second_demo_dir.exists()` assertion with persisted ZMQ `.npz` checks.
   - Asserted both demos save ZMQ rows and the second demo's first `seq` is greater than the first demo's last `seq`.
 - Tests run and results:
-  - `bash -lc 'source /home/robot/miniconda3/etc/profile.d/conda.sh; conda deactivate; python -m compileall MainController/src/MainController/test/test_maincontroller_mock_runtime.py'` passed.
-  - `bash -lc 'source /home/robot/miniconda3/etc/profile.d/conda.sh; conda deactivate; python -m pytest MainController/src/MainController/test/test_maincontroller_mock_runtime.py -q'` passed outside the sandbox with approval because the mock UDS server needs Unix socket bind: `21 passed in 23.29s`.
+  - `bash -lc 'source /home/robot/miniconda3/etc/profile.d/conda.sh; conda deactivate; python -m compileall MainController/src/main_controller/test/test_maincontroller_mock_runtime.py'` passed.
+  - `bash -lc 'source /home/robot/miniconda3/etc/profile.d/conda.sh; conda deactivate; python -m pytest MainController/src/main_controller/test/test_maincontroller_mock_runtime.py -q'` passed outside the sandbox with approval because the mock UDS server needs Unix socket bind: `21 passed in 23.29s`.
 - Commit hashes:
   - MainController: `c31a4d9b5a42ecb76ed90b2554934be4ffbf1d48`
   - outer docs repository: report update is committed separately because a commit cannot contain its own hash.
@@ -234,14 +234,14 @@ Initial relevant repository status: all relevant repositories were clean before 
 - Status: done
 - Affected repositories: MainController
 - Files changed:
-  - `MainController/src/MainController/test/test_maincontroller_mock_runtime.py`
+  - `MainController/src/main_controller/test/test_maincontroller_mock_runtime.py`
   - `ImplementationReport.md`
 - Tests added or modified:
   - Added `assert_npz_fields_same_length(npz)` helper.
   - Applied it to `ft300_timestamps.npz`, `xense_timestamps.npz`, `realsense_metadata.npz`, and `zmq_telemetry.npz`.
 - Tests run and results:
-  - `bash -lc 'source /home/robot/miniconda3/etc/profile.d/conda.sh; conda deactivate; python -m compileall MainController/src/MainController/test/test_maincontroller_mock_runtime.py'` passed.
-  - `bash -lc 'source /home/robot/miniconda3/etc/profile.d/conda.sh; conda deactivate; python -m pytest MainController/src/MainController/test/test_maincontroller_mock_runtime.py -q'` passed outside the sandbox with approval because the mock UDS server needs Unix socket bind: `21 passed in 23.29s`.
+  - `bash -lc 'source /home/robot/miniconda3/etc/profile.d/conda.sh; conda deactivate; python -m compileall MainController/src/main_controller/test/test_maincontroller_mock_runtime.py'` passed.
+  - `bash -lc 'source /home/robot/miniconda3/etc/profile.d/conda.sh; conda deactivate; python -m pytest MainController/src/main_controller/test/test_maincontroller_mock_runtime.py -q'` passed outside the sandbox with approval because the mock UDS server needs Unix socket bind: `21 passed in 23.29s`.
 - Commit hashes:
   - MainController: `f50751520ce29cfe5323c1b22de8e523b4fb9bfc`
   - outer docs repository: report update is committed separately because a commit cannot contain its own hash.
@@ -252,10 +252,10 @@ Initial relevant repository status: all relevant repositories were clean before 
 - Status: done
 - Affected repositories: MainController, outer docs repository
 - Files changed:
-  - `MainController/src/MainController/MainController/uds_client.py`
-  - `MainController/src/MainController/MainController/main.py`
-  - `MainController/src/MainController/test/test_maincontroller_mock_runtime.py`
-  - `MainController/src/MainController/README.md`
+  - `MainController/src/main_controller/main_controller/uds_client.py`
+  - `MainController/src/main_controller/main_controller/main.py`
+  - `MainController/src/main_controller/test/test_maincontroller_mock_runtime.py`
+  - `MainController/src/main_controller/README.md`
   - `plan.md`
   - `implement_plan.md`
   - `ImplementationReport.md`
@@ -264,9 +264,9 @@ Initial relevant repository status: all relevant repositories were clean before 
   - Added finish partial failure coverage that avoids `status: "done"`, records per-sensor command results and saved files, and stops the controller.
   - Added discard partial failure coverage that writes `status: "failed"`, not `discarded`.
 - Tests run and results:
-  - `bash -lc 'source /home/robot/miniconda3/etc/profile.d/conda.sh; conda deactivate; python -m compileall MainController/src/MainController/MainController MainController/src/MainController/test/test_maincontroller_mock_runtime.py'` passed.
-  - `bash -lc 'source /home/robot/miniconda3/etc/profile.d/conda.sh; conda deactivate; python -m pytest MainController/src/MainController/test/test_maincontroller_core.py -q'` passed: `9 passed in 0.32s`.
-  - `bash -lc 'source /home/robot/miniconda3/etc/profile.d/conda.sh; conda deactivate; python -m pytest MainController/src/MainController/test/test_maincontroller_mock_runtime.py -q'` passed outside the sandbox with approval because the mock UDS server needs Unix socket bind: `21 passed in 23.37s`.
+  - `bash -lc 'source /home/robot/miniconda3/etc/profile.d/conda.sh; conda deactivate; python -m compileall MainController/src/main_controller/main_controller MainController/src/main_controller/test/test_maincontroller_mock_runtime.py'` passed.
+  - `bash -lc 'source /home/robot/miniconda3/etc/profile.d/conda.sh; conda deactivate; python -m pytest MainController/src/main_controller/test/test_maincontroller_core.py -q'` passed: `9 passed in 0.32s`.
+  - `bash -lc 'source /home/robot/miniconda3/etc/profile.d/conda.sh; conda deactivate; python -m pytest MainController/src/main_controller/test/test_maincontroller_mock_runtime.py -q'` passed outside the sandbox with approval because the mock UDS server needs Unix socket bind: `21 passed in 23.37s`.
 - Commit hashes:
   - MainController: `62bb0fc47bc4a75967f5427d24a02251cfb80a83`
   - outer docs repository: report update is committed separately because a commit cannot contain its own hash.
@@ -279,9 +279,9 @@ Initial relevant repository status: all relevant repositories were clean before 
 
 ## Final Validation
 
-- `bash -lc 'source /home/robot/miniconda3/etc/profile.d/conda.sh; conda deactivate; python -m compileall MainController/src/MainController/MainController MainController/src/MainController/test/test_maincontroller_core.py MainController/src/MainController/test/test_maincontroller_mock_runtime.py FT300S/core XenseTacSensor/core'` passed.
-- `bash -lc 'source /home/robot/miniconda3/etc/profile.d/conda.sh; conda deactivate; python -m pytest MainController/src/MainController/test/test_maincontroller_core.py -q'` passed: `9 passed in 0.32s`.
-- `bash -lc 'source /home/robot/miniconda3/etc/profile.d/conda.sh; conda deactivate; python -m pytest MainController/src/MainController/test/test_maincontroller_mock_runtime.py -q'` passed outside the sandbox with approval because the mock UDS server needs Unix socket bind: `21 passed in 23.36s`.
+- `bash -lc 'source /home/robot/miniconda3/etc/profile.d/conda.sh; conda deactivate; python -m compileall MainController/src/main_controller/main_controller MainController/src/main_controller/test/test_maincontroller_core.py MainController/src/main_controller/test/test_maincontroller_mock_runtime.py FT300S/core XenseTacSensor/core'` passed.
+- `bash -lc 'source /home/robot/miniconda3/etc/profile.d/conda.sh; conda deactivate; python -m pytest MainController/src/main_controller/test/test_maincontroller_core.py -q'` passed: `9 passed in 0.32s`.
+- `bash -lc 'source /home/robot/miniconda3/etc/profile.d/conda.sh; conda deactivate; python -m pytest MainController/src/main_controller/test/test_maincontroller_mock_runtime.py -q'` passed outside the sandbox with approval because the mock UDS server needs Unix socket bind: `21 passed in 23.36s`.
 
 ## Unresolved Risks and Follow-up Notes
 

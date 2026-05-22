@@ -2,7 +2,7 @@
 
 ## 总体路线
 
-`MainController` 做成 ROS2 `ament_python` 包，但主体按普通 Python 控制程序设计。通过 `ros2 run MainController main_controller` 启动，内部使用线程、队列、子进程管理、UDS socket、ZMQ 和少量 rclpy service/subscriber。
+`main_controller` 做成 ROS2 `ament_python` 包，但主体按普通 Python 控制程序设计。通过 `ros2 run main_controller main_controller` 启动，内部使用线程、队列、子进程管理、UDS socket、ZMQ 和少量 rclpy service/subscriber。
 
 主控不持续订阅 RealSense `image_raw`。实时监控依赖 `/camX/camera/color/metadata` 和 `/camX/camera/depth/metadata`；开始或恢复录制前会短暂订阅 required image topics 做 readiness baseline，rosbag2 仍负责记录 image topic。ZMQ receiver 必须从主控启动后一直读取，直到主控退出。
 
@@ -12,7 +12,7 @@
 
 ### 已落地模块
 
-- 包入口：`setup.py` 已新增 `main_controller = MainController.main:main`。
+- 包入口：`setup.py` 已新增 `main_controller = main_controller.main:main`。
 - 依赖声明：`package.xml` 已补充 `rosbag2_interfaces`、`realsense2_camera_msgs`、`python3-zmq`、`python3-numpy`。
 - `config.py`：集中定义默认路径、ZMQ endpoint、UDS socket、频率阈值、RealSense metadata topic、required image topic、formal/debug_degraded capture mode、rosbag count-skew threshold 和 fatal error pattern。
 - `main.py`：实现 CLI、命令队列、主状态机、demo start/pause/done/discard/stop 流程，以及 RealSense fatal error 自动暂停和重启路径。
@@ -38,9 +38,9 @@
 
 ### 已验证内容
 
-- 系统 Python 导入检查通过：`PYTHONPATH=MainController/src/MainController /usr/bin/python3 ...` 能导入 MainController 核心模块。
+- 系统 Python 导入检查通过：`PYTHONPATH=MainController/src/main_controller /usr/bin/python3 ...` 能导入 MainController 核心模块。
 - `zmq` 在 `/usr/bin/python3` 下可用，版本为 `24.0.1`；默认 shell 的 conda Python 3.13 仍看不到 apt 安装的 `python3-zmq`。
-- 编译检查通过：`/usr/bin/python3 -m compileall MainController/src/MainController/MainController`。
+- 编译检查通过：`/usr/bin/python3 -m compileall MainController/src/main_controller/main_controller`。
 - 新增单元测试 `test_maincontroller_core.py` 并通过，当前结果为 `4 passed`。
 - ROS service 接口字段已确认：`Record.Request` 字段为 `uri`，`Pause/Resume/Stop.Request` 均为空请求。
 
@@ -48,7 +48,7 @@
 
 - 尚未在真实 FT300S、XenseTacSensor、RealSense 和 rosbag2 recorder 全链路上运行 `main_controller`。
 - 尚未验证 conda 启动命令在当前 shell/ROS2 启动方式下是否需要额外环境清理。
-- 尚未验证 `ros2 run MainController main_controller` 的 colcon build/install 流程。
+- 尚未验证 `ros2 run main_controller main_controller` 的 colcon build/install 流程。
 - 尚未做真实 metadata topic 与当前启用相机列表的运行时发现；目前 topic 来自配置默认值。
 - 尚未做真实 RealSense fatal log 注入到子进程 stdout/stderr 的端到端测试。
 - 尚未做真实 demo 采集输出目录、`.npz` 内容和 manifest 的完整验收。

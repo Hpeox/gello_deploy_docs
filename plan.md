@@ -2,14 +2,14 @@
 
 ## Summary
 
-这是一个用于具身智能模仿学习数据采集的代码项目，目前已经实现了 FT300S、XenseTacSensor、RealSense 和 ZMQ 参考模块。下一步需要在 `MainController/src/MainController` 内实现统一主控：启动 FT300S、XenseTacSensor、RealSense 两个 launch，并强制连接 ZMQ telemetry relay。
+这是一个用于具身智能模仿学习数据采集的代码项目，目前已经实现了 FT300S、XenseTacSensor、RealSense 和 ZMQ 参考模块。下一步需要在 `MainController/src/main_controller` 内实现统一主控：启动 FT300S、XenseTacSensor、RealSense 两个 launch，并强制连接 ZMQ telemetry relay。
 
 主控启动后自动初始化，交互命令只保留 `s/p/d/x/q`。每个 demo 保存原始时间戳、ZMQ 遥测、各模块落盘文件、rosbag 信息，并实时监控所有来源的丢帧和异常帧间隔。
 
 ## Key Changes
 
 - 新增 `main_controller` console script，作为主控启动入口。
-- MainController 是 ROS2 `ament_python` 包，但主体按普通 Python 控制程序设计；通过 `ros2 run MainController main_controller` 启动，内部使用线程、队列、子进程、UDS、ZMQ 和少量 rclpy service/subscriber。
+- MainController 是 ROS2 `ament_python` 包，但主体按普通 Python 控制程序设计；通过 `ros2 run main_controller main_controller` 启动，内部使用线程、队列、子进程、UDS、ZMQ 和少量 rclpy service/subscriber。
 - ZMQ telemetry 是必须项，但保留默认参数：
   - `--zmq-connect` 默认 `tcp://127.0.0.1:6000`
   - 远程 relay 不在本机时，用 `--zmq-connect tcp://<host>:6000` 覆盖。

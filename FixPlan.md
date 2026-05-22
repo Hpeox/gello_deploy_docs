@@ -11,9 +11,9 @@
   runtime UDS mock's shared MainController protocol helpers with real sensor
   protocol helpers so Xense compatibility is actually tested.
 - Involved files:
-  - `MainController/src/MainController/MainController/uds_client.py`
-  - `MainController/src/MainController/MainController/main.py`
-  - `MainController/src/MainController/test/test_maincontroller_mock_runtime.py`
+  - `MainController/src/main_controller/main_controller/uds_client.py`
+  - `MainController/src/main_controller/main_controller/main.py`
+  - `MainController/src/main_controller/test/test_maincontroller_mock_runtime.py`
     or a focused UDS client test file
   - `FT300S/protocol/messages.py`
   - `XenseTacSensor/protocol/messages.py`
@@ -27,12 +27,12 @@
   - Update mock Xense to use `XenseTacSensor.protocol.messages`.
   - Assert Xense-bound messages start with `b"XS"`.
   - Assert FT300S-bound messages start with `b"F3"`.
-  - Avoid using `MainController.uds_client` protocol helpers inside sensor-side
+  - Avoid using `main_controller.uds_client` protocol helpers inside sensor-side
     runtime mocks except where the test is specifically targeting the client
     helper itself.
 - Risks and notes:
   - Existing tests import `pack_message()` and `unpack_header()` from
-    `MainController.uds_client`, so API changes should be compatible or updated
+    `main_controller.uds_client`, so API changes should be compatible or updated
     deliberately.
   - Finding 6 is merged into this task because it is the test-fidelity half of
     the same protocol compatibility problem.
@@ -52,8 +52,8 @@
   - `XenseTacSensor/core/service.py`
   - `FT300S/core/state.py`
   - `XenseTacSensor/core/state.py`
-  - `MainController/src/MainController/MainController/uds_client.py`
-  - `MainController/src/MainController/test/test_maincontroller_mock_runtime.py`
+  - `MainController/src/main_controller/main_controller/uds_client.py`
+  - `MainController/src/main_controller/test/test_maincontroller_mock_runtime.py`
 - Main code changes:
   - In both sensor services, accept `DEMO_DONE_REQ` from `PAUSED`, flush the
     current demo cache, transition to `WAIT_START`, and ACK with `saved_file`.
@@ -92,9 +92,9 @@
   an unrecoverable startup failure: log the failure, enter `ERROR`, clean up all
   already-started resources, and end in `STOPPED`.
 - Involved files:
-  - `MainController/src/MainController/MainController/main.py`
-  - `MainController/src/MainController/MainController/processes.py`
-  - `MainController/src/MainController/test/test_maincontroller_mock_runtime.py`
+  - `MainController/src/main_controller/main_controller/main.py`
+  - `MainController/src/main_controller/main_controller/processes.py`
+  - `MainController/src/main_controller/test/test_maincontroller_mock_runtime.py`
     or a focused controller startup test file
 - Main code changes:
   - Wrap startup so exceptions from process startup, receiver startup, ZMQ first
@@ -134,11 +134,11 @@
   the active demo buffers/context, and does not save high-frequency `.npz`;
   however, its manifest status is `failed`, not `discarded`.
 - Involved files:
-  - `MainController/src/MainController/MainController/main.py`
-  - `MainController/src/MainController/test/test_maincontroller_mock_runtime.py`
+  - `MainController/src/main_controller/main_controller/main.py`
+  - `MainController/src/main_controller/test/test_maincontroller_mock_runtime.py`
   - `plan.md`
   - `implement_plan.md`
-  - `MainController/src/MainController/README.md`
+  - `MainController/src/main_controller/README.md`
 - Main code changes:
   - Track which sensors have ACKed `START_REQ`.
   - If a later sensor fails or times out, send `DEMO_DISCARD_REQ` to every
@@ -202,9 +202,9 @@
   continuously for the lifetime of the system. Keep invalid individual
   telemetry frames and ordinary drop warnings non-fatal.
 - Involved files:
-  - `MainController/src/MainController/MainController/zmq_telemetry.py`
-  - `MainController/src/MainController/MainController/main.py`
-  - `MainController/src/MainController/test/test_maincontroller_mock_runtime.py`
+  - `MainController/src/main_controller/main_controller/zmq_telemetry.py`
+  - `MainController/src/main_controller/main_controller/main.py`
+  - `MainController/src/main_controller/test/test_maincontroller_mock_runtime.py`
     or a focused ZMQ receiver/controller test file
 - Main code changes:
   - Keep invalid individual telemetry frames as non-fatal: log the invalid frame
@@ -240,10 +240,10 @@
   four-camera recording, block formal recording when required image topics are
   not ready, and validate the recorded rosbag metadata after each demo.
 - Involved files:
-  - `MainController/src/MainController/MainController/config.py`
-  - `MainController/src/MainController/MainController/main.py`
-  - `MainController/src/MainController/MainController/rosbag_control.py`
-  - `MainController/src/MainController/test/test_maincontroller_mock_runtime.py`
+  - `MainController/src/main_controller/main_controller/config.py`
+  - `MainController/src/main_controller/main_controller/main.py`
+  - `MainController/src/main_controller/main_controller/rosbag_control.py`
+  - `MainController/src/main_controller/test/test_maincontroller_mock_runtime.py`
   - a new MainController helper module for RealSense image-topic readiness /
     rosbag metadata validation, if keeping this logic out of `main.py` is
     cleaner
@@ -351,9 +351,9 @@
   manifests and make the discard path write a lightweight discarded-demo
   manifest before the in-memory demo buffers are cleared.
 - Involved files:
-  - `MainController/src/MainController/MainController/main.py`
-  - `MainController/src/MainController/MainController/buffers.py`
-  - `MainController/src/MainController/test/test_maincontroller_mock_runtime.py`
+  - `MainController/src/main_controller/main_controller/main.py`
+  - `MainController/src/main_controller/main_controller/buffers.py`
+  - `MainController/src/main_controller/test/test_maincontroller_mock_runtime.py`
   - `plan.md`
   - `implement_plan.md`
 - Main code changes:
@@ -420,7 +420,7 @@
   demo mock runtime test with a real check that the second demo has an
   independent ZMQ buffer and persisted `.npz`.
 - Involved files:
-  - `MainController/src/MainController/test/test_maincontroller_mock_runtime.py`
+  - `MainController/src/main_controller/test/test_maincontroller_mock_runtime.py`
 - Test changes:
   - Remove `or second_demo_dir.exists()` from the assertion.
   - Prefer checking persisted data after the second demo is finished:
@@ -446,8 +446,8 @@
   `.npz` file has the same row count, and apply it to all MainController saved
   `.npz` outputs.
 - Involved files:
-  - `MainController/src/MainController/test/test_maincontroller_mock_runtime.py`
-  - optionally `MainController/src/MainController/test/test_maincontroller_core.py`
+  - `MainController/src/main_controller/test/test_maincontroller_mock_runtime.py`
+  - optionally `MainController/src/main_controller/test/test_maincontroller_core.py`
 - Test changes:
   - Add a helper such as `assert_npz_fields_same_length(npz)`.
   - The helper should:
@@ -480,12 +480,12 @@
   not silently leave MainController state inconsistent with physical sensor
   state, and must not save a successful manifest when required sensors failed.
 - Involved files:
-  - `MainController/src/MainController/MainController/main.py`
-  - `MainController/src/MainController/MainController/uds_client.py`
-  - `MainController/src/MainController/test/test_maincontroller_mock_runtime.py`
+  - `MainController/src/main_controller/main_controller/main.py`
+  - `MainController/src/main_controller/main_controller/uds_client.py`
+  - `MainController/src/main_controller/test/test_maincontroller_mock_runtime.py`
   - `plan.md`
   - `implement_plan.md`
-  - `MainController/src/MainController/README.md`
+  - `MainController/src/main_controller/README.md`
 - Main code changes:
   - Extend the UDS command result path so relevant sensor `ERROR` responses are
     surfaced to the command caller instead of being only logged as asynchronous
