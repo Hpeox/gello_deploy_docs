@@ -295,10 +295,33 @@ Initial relevant repository status: all relevant repositories were clean before 
   - outer docs repository: report update is committed separately because a commit cannot contain its own hash.
 - Notes: Fresh-start rollback remains scoped to sensors that ACKed `START_REQ`; paused-resume rollback targets every required sensor that already held the paused demo context. Unconfirmed rollback cleanup routes through `ERROR -> STOPPING -> STOPPED`.
 
+### Task 13: Rosbag pause and finish stop failures are transaction failures
+
+- Status: done
+- Affected repositories: MainController, outer docs repository
+- Files changed:
+  - `MainController/src/main_controller/main_controller/main.py`
+  - `MainController/src/main_controller/test/test_maincontroller_mock_runtime.py`
+  - `MainController/src/main_controller/README.md`
+  - `implement_plan.md`
+  - `ImplementationReport.md`
+- Tests added or modified:
+  - Added rosbag pause failure coverage after both sensors ACK `PAUSE_REQ`; manifest records `rosbag_pause.ok == False` and final state is `STOPPED`.
+  - Added finish-time rosbag stop failure coverage after both sensors ACK `DEMO_DONE_REQ`; manifest is `status: "failed"` and records `rosbag_stop.ok == False`.
+  - Asserted finish stop failure preserves available sensor `saved_file` values, saves controller `.npz`, and skips RealSense rosbag post-check.
+  - Existing pause, finish, and discard partial-failure tests now align with per-operation command result shape.
+- Tests run and results:
+  - `bash -lc 'source /home/robot/miniconda3/etc/profile.d/conda.sh; conda deactivate; python -m compileall MainController/src/main_controller/main_controller MainController/src/main_controller/test/test_maincontroller_mock_runtime.py'` passed.
+  - `bash -lc 'source /home/robot/miniconda3/etc/profile.d/conda.sh; conda deactivate; python -m pytest MainController/src/main_controller/test/test_maincontroller_mock_runtime.py -q -k "pause_partial_failure or rosbag_pause_failure or finish_partial_failure or finish_rosbag_stop_failure or discard_partial_failure"'` passed outside the sandbox with approval because the mock UDS server needs Unix socket bind: `5 passed, 20 deselected in 7.78s`.
+- Commit hashes:
+  - MainController: `f7a2fa84f6963693627cd05a9f32192b251a2c5b`
+  - outer docs repository: report update is committed separately because a commit cannot contain its own hash.
+- Notes: `done` now requires sensor finish, rosbag stop, and required post-check success. Rosbag pause/stop failures write failed manifests with detailed command results and route through fatal cleanup.
+
 ## Current Work
 
-- Current task: task 13 pending
-- Current state: FixPlan tasks 1-12 are implemented, validated, and committed.
+- Current task: task 14 pending
+- Current state: FixPlan tasks 1-13 are implemented, validated, and committed.
 
 ## Final Validation
 
