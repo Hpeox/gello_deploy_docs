@@ -115,13 +115,32 @@ Initial relevant repository status: all relevant repositories were clean before 
 
 ### Task 5: ZMQ receiver fatal termination only logs a warning
 
-- Status: pending
-- Affected repositories: MainController
-- Files changed: none yet
-- Tests added or modified: none yet
-- Tests run and results: none yet
-- Commit hashes: none yet
-- Notes: Ordinary packet loss and invalid individual frames remain non-fatal.
+- Status: done
+- Affected repositories: MainController, outer docs repository
+- Files changed:
+  - `MainController/src/MainController/MainController/zmq_telemetry.py`
+  - `MainController/src/MainController/MainController/main.py`
+  - `MainController/src/MainController/test/test_maincontroller_core.py`
+  - `MainController/src/MainController/test/test_maincontroller_mock_runtime.py`
+  - `ImplementationReport.md`
+- Tests added or modified:
+  - Added receiver-level coverage that invalid ZMQ payloads call the warning path and the receiver continues to accept a later valid frame.
+  - Added receiver-level coverage that an `on_frame` callback exception reports a fatal receiver failure.
+  - Added controller coverage that ordinary ZMQ warning handling does not stop the controller.
+  - Added controller coverage that a `zmq_fatal` command performs full cleanup and stops sensors, rosbag, receiver, RealSense monitor, and subprocesses.
+- Tests run and results:
+  - Previous interrupted validation used the active conda Python and `python -m pytest MainController/src/MainController/test/test_maincontroller_mock_runtime.py`, which failed with `No module named pytest`. That attempt is invalid for task validation because pytest was missing from that environment.
+  - Valid MainController tests must be run from `/home/robot/Desktop/gello-deploy` after `conda deactivate`, using system Python:
+    - `conda deactivate && python -m pytest MainController/src/MainController/test/test_maincontroller_core.py -q`
+    - `conda deactivate && python -m pytest MainController/src/MainController/test/test_maincontroller_mock_runtime.py -q`
+  - `bash -lc 'source /home/robot/miniconda3/etc/profile.d/conda.sh; conda deactivate; python -m compileall MainController/src/MainController/MainController MainController/src/MainController/test/test_maincontroller_core.py MainController/src/MainController/test/test_maincontroller_mock_runtime.py'` passed.
+  - `bash -lc 'source /home/robot/miniconda3/etc/profile.d/conda.sh; conda deactivate; python -m pytest MainController/src/MainController/test/test_maincontroller_core.py -q'` passed: `6 passed in 0.32s`.
+  - The first sandboxed run of `bash -lc 'source /home/robot/miniconda3/etc/profile.d/conda.sh; conda deactivate; python -m pytest MainController/src/MainController/test/test_maincontroller_mock_runtime.py -q'` failed with `PermissionError: [Errno 1] Operation not permitted` while binding the mock UDS Unix socket. This was an environment/sandbox failure, not a code behavior failure.
+  - The same mock runtime command rerun outside the sandbox with approval passed: `15 passed in 14.02s`.
+- Commit hashes:
+  - MainController: `ad25c628a476ee5c3d0aea1ed7538909e8292264`
+  - outer docs repository: report update is committed separately because a commit cannot contain its own hash.
+- Notes: Current diff appears scoped to Task 5. Ordinary packet loss and invalid individual frames remain non-fatal; receiver-loop fatal termination is routed to MainController as a fatal event.
 
 ### Task 6: RealSense four-camera image-stream baseline and rosbag post-check
 
@@ -186,7 +205,7 @@ Initial relevant repository status: all relevant repositories were clean before 
 ## Current Work
 
 - Current task: none
-- Current state: Task 4 MainController changes committed; docs/report checkpoint pending outer docs commit.
+- Current state: Task 5 MainController changes committed; report checkpoint pending outer docs commit.
 
 ## Unresolved Risks and Follow-up Notes
 
