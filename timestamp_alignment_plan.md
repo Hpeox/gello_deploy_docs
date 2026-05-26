@@ -7,10 +7,11 @@
 第一版目标：
 
 - MainController 在用户输入 `d` 后，于 `FINALIZING` 阶段调用 `main_controller/timestamp_alignment.py`，输入一个已完成 demo 目录，例如 `runtime_sessions/session_*/demos/demo_*/`。
-- 读取 `manifest.json`、主控保存的 `.npz`、FT300S/XenseTacSensor 自己落盘的 `.npy`、RealSense rosbag。
+- 读取 `manifest.json`、主控保存的 `.npz`、RealSense rosbag image header；FT300S/XenseTacSensor 自己落盘的 `.npy` 路径记录到 source manifest，第一版不读取其内容。
 - 统一转换为 `int64` Unix epoch nanoseconds。
 - 自动生成对齐配置、对齐索引、对齐 manifest 和人工报告，保留每个来源的原始时间戳、匹配索引、时间差和有效性 mask。
 - `tools/align_demo_timestamps.py` 作为相似但独立的 CLI 对齐工具，不跨目录 import `main_controller.timestamp_alignment`，可用于重跑、调参或诊断。
+- 主控和独立 CLI 均提供 `--alignment-base-source realsense|xense`；默认 `realsense`，选择 `xense` 时固定使用 `timestamp_ns_0` 作为目标时间轴。
 
 第一版不做：
 
@@ -29,7 +30,7 @@
 关键字段：
 
 - `started_ns`：主控创建 demo 时的 `time.time_ns()`，早于传感器 ACK 和 rosbag resume，只能作为粗边界。
-- `finished_ns`：主控保存 manifest 时的 `time.time_ns()`，晚于传感器 flush 和 rosbag stop，只能作为粗边界。若本次采集显式使用 `sensor_flush_timeout_s=none` / `unbounded`，该边界可能明显晚于采集停止时刻，这是预期的无界 flush 等待结果，离线对齐不应把这段等待时间解释为有效采集窗口。
+- `finished_ns`：主控保存 manifest 时的 `time.time_ns()`，晚于传感器 flush 和 rosbag stop，只能作为粗边界。`FINALIZING` 中传感器 `DEMO_DONE_REQ` 与 rosbag `stop` 会并发发出；若本次采集显式使用 `sensor_flush_timeout_s=none` / `unbounded`，该边界仍可能明显晚于采集停止时刻，这是预期的无界 flush 等待结果，离线对齐不应把这段等待时间解释为有效采集窗口。
 - `rosbag_uri`：当前 demo 的 rosbag 目录。
 - `sensor_saved_files.ft300`、`sensor_saved_files.xense`：传感器服务 ACK 返回的 `.npy` 文件名。
 - `npz.ft300`、`npz.xense`、`npz.realsense`、`npz.zmq`：主控保存的时间戳索引。
@@ -54,6 +55,7 @@
 - 数据结构是 `np.load(..., allow_pickle=True).item()`，包含 `events` 和 `frames_data`。
 - `frames_data["00000"]["ft300_timestamp_ns"]` 应与主控索引中的 `timestamp_ns` 按 `frame_id` 对应。
 - wrench/力矩等完整值在同一个 per-frame dict 中。
+- 当前第一版对齐只使用主控索引 `ft300_timestamps.npz`；完整 `.npy` 读取与 timestamp 交叉校验列为后续增强。
 
 推荐主时间戳：`ft300_timestamp_ns` 或主控索引 `timestamp_ns`。两者按 `frame_id` 交叉校验，差值异常时用主控索引告警但不静默覆盖。
 
@@ -74,12 +76,13 @@
 - 路径解析规则：如果 `saved_file` 是绝对路径，直接使用；否则拼接为 `repo_root / "runtime_frames" / saved_file`。
 - 数据结构是 `np.load(..., allow_pickle=True).item()`，包含 `events` 和 `frames_data`。
 - `frames_data["00000"]["OG000544_timestamp_ns"]`、`frames_data["00000"]["OG001009_timestamp_ns"]` 分别对应两个触觉传感器。
+- 当前第一版对齐只使用主控索引 `xense_timestamps.npz`；完整 `.npy` 读取与 timestamp 交叉校验列为后续增强。
 
 推荐主时间戳：
 
-- 对单个传感器张量，使用自己的 `timestamp_ns_0` 或 `timestamp_ns_1`。
-- 对一帧双传感器组合特征，默认使用 `max(timestamp_ns_0, timestamp_ns_1)`，表示这一组合在两个读数都完成后才可被因果使用。
-- 分析模式可额外保存 `mid_timestamp_ns = round((timestamp_ns_0 + timestamp_ns_1) / 2)`，但不要替代因果时间戳。
+- 两个触觉传感器独立作为 `xense_0` 和 `xense_1` stream 参与匹配。
+- `xense_0` 使用 `timestamp_ns_0`，`xense_1` 使用 `timestamp_ns_1`。
+- 选择 Xense 作为因果对齐基准时固定使用 `timestamp_ns_0`，即 `--base xense:0`。
 
 ### RealSense
 
@@ -90,14 +93,14 @@
 - `header_stamp_ns`：metadata ROS header stamp。
 - `frame_timestamp_ns`：metadata JSON 中 `frame_timestamp` 从毫秒转纳秒；它来自 librealsense `frame.get_timestamp()`，必须结合 `clock_domain` 解释。
 - `hw_timestamp_ns`：metadata payload 中 `RS2_FRAME_METADATA_FRAME_TIMESTAMP` 从毫秒转纳秒，用于诊断，不作为跨源对齐主轴。
-- `clock_domain`：metadata JSON 中的 timestamp domain。后续代码应把该字段保存进 `realsense_metadata.npz`；在该字段落盘前，对齐工具只能从 rosbag metadata 或现场检查结果间接判断。
+- `clock_domain`：metadata JSON 中的 timestamp domain，保存进 `realsense_metadata.npz`。如果某帧 metadata JSON 缺少该字段，保存为空值并在 log/report 中告警，不导致采集失败；目前没有旧 `.npz`，不做缺列兼容。
 - `recv_time_ns`
 - `recv_monotonic_ns`
 
 rosbag：`manifest.rosbag_uri`
 
 - 当前 rosbag launch 记录 image topic，不记录 metadata topic。
-- 需要用 image topic 的 `header.stamp` 作为图像时间戳，并用 `tools/realsense_bag_compare.py` 或新工具验证 image header 与 metadata header 的对应关系。
+- 第一版优先用 image topic 的 `header.stamp` 作为图像时间戳；rosbag 读取失败或不可用时 fallback 到 metadata `header_stamp_ns`。
 
 推荐主时间戳：
 
@@ -107,7 +110,8 @@ rosbag：`manifest.rosbag_uri`
   - `HARDWARE_CLOCK`：相机硬件时钟。此时 `header_stamp_ns = ros_time_base_ns + (frame_timestamp_ms - camera_time_base_ms) * 1e6`，离线只看 `frame_timestamp` 无法唯一恢复 ROS epoch time。
   - `SYSTEM_TIME` 或 `GLOBAL_TIME`：通常已经映射到 OS/system time，`header_stamp_ns` 应接近 `frame_timestamp_ns`，但仍以实际 header stamp 为准。
 - `hw_timestamp_ns` 只用于诊断设备侧时间，不直接和 `time.time_ns()`、ZMQ Unix stamp 混用。
-- alignment report 应按 topic 输出 `clock_domain` 分布、`image_header_ns - metadata_header_ns` 摘要，以及 `metadata_header_ns - frame_timestamp_ns` 摘要。
+- alignment report 第一版输出 `clock_domain` 分布和缺失统计；基于 `clock_domain` 的
+  `metadata_header_ns - frame_timestamp_ns` 诊断列为后续增强。
 
 注意：formal 采集默认要求 `cam1` 到 `cam4` 的 color `image_raw` 和 `aligned_depth_to_color/image_raw` 共 8 个 image topic。对齐工具必须以 `manifest.realsense_image_readiness.required_topics` 或 `manifest.realsense_rosbag_postcheck.required_topics` 为准；`debug_degraded` 采集则只使用 manifest 中记录的 required 子集。
 
@@ -136,19 +140,23 @@ rosbag：`manifest.rosbag_uri`
 
 ## 统一时间轴选择
 
-第一版实现应支持三种 `--base`：
+第一版实现应支持 `--alignment-base-source realsense|xense`，并支持手动 `--base` 覆盖：
 
-1. `--base realsense:<topic>`
+1. `--base realsense:<topic>` 或 `--alignment-base-source realsense`
    - 推荐给视觉模仿学习数据集。
    - 目标时间轴直接使用指定 RealSense metadata 或 rosbag image 的帧时间戳。
    - 图像不可插值，因此以相机帧为样本基准最稳。
 
-2. `--base robot`
+2. `--base xense:0` 或 `--alignment-base-source xense`
+   - 使用 Xense `timestamp_ns_0` 作为目标时间轴。
+   - 两路触觉传感器仍分别输出 `xense_0_*` 和 `xense_1_*` 匹配字段。
+
+3. `--base robot`
    - 推荐给控制/状态闭环分析。
    - 使用 ZMQ `source=2` robot telemetry 的时间戳作为目标时间轴。
    - 适合 50 Hz 左右的 robot state/action 数据。
 
-3. `--base grid --hz <rate>`
+4. `--base grid --hz <rate>`
    - 推荐给对齐质量检查或固定频率训练样本。
    - `start_ns = max(first_valid_time of required streams)`
    - `end_ns = min(last_valid_time of required streams)`
@@ -164,7 +172,8 @@ rosbag：`manifest.rosbag_uri`
 
 默认建议：
 
-- 有 RealSense 图像参与训练时，用 `--base realsense:<topic>` 指定某条 required image/metadata topic，或自动选择 manifest required list 中第一条有数据的 color stream。
+- 有 RealSense 图像参与训练时，用 `--alignment-base-source realsense` 或 `--base realsense:<topic>` 指定某条 required image/metadata topic。
+- 只做触觉优先的因果对齐时，用 `--alignment-base-source xense` 或 `--base xense:0`，目标时间轴为 `timestamp_ns_0`。
 - 只做力/触觉/机器人状态对齐时，用 `--base robot`。
 - 多相机时，每个相机都保留自己的 matched image index 和 `delta_ns`，不要强行假设完全同帧。
 
@@ -184,7 +193,7 @@ rosbag：`manifest.rosbag_uri`
 
 推荐容忍窗口：
 
-- FT300S：过去 20 ms 内有效。
+- FT300S：过去 20 ms 内有效。输出字段使用 `ft300s_*`，报告显示为 `FT300S`，其中 `S` 是型号名组成部分。
 - XenseTacSensor：过去 66.7 ms 内有效。
 - ZMQ robot/GELLO/gripper：过去 40 ms 内有效。
 - RealSense：过去 66.7 ms 内有效。
@@ -222,38 +231,37 @@ XenseTacSensor：
 
 - `force`、`force_norm`、`force_resultant` 可按需求线性插值。
 - `rec` 这类触觉图/矩阵默认不可插值，使用最近过去帧或最近帧。
-- 双传感器组合时用 `max(timestamp_ns_0, timestamp_ns_1)` 做 causality gate，同时保留两个原始 timestamp 和两个 `delta_ns`。
+- 两个触觉传感器独立输出为 `xense_0_*` 和 `xense_1_*`；不生成两路固定偏差统计。
 
 RealSense：
 
 - image 不插值。
 - color/depth/aligned depth 使用 rosbag image `header.stamp` 选择帧。
-- metadata 的 `frame_number` 作为 continuity 和 image-metadata 复核信息。
+- metadata 的 `frame_number` 作为 continuity 信息。
 - 默认按 rosbag image `header.stamp` 或 metadata `header_stamp_ns` 对齐；`frame_timestamp_ns` 只做一致性检查。
-- 若 `clock_domain == HARDWARE_CLOCK`，允许 `metadata_header_ns - frame_timestamp_ns` 存在大 offset，但其随时间的漂移应稳定；必要时按 topic 拟合线性/base-time 映射并写入报告。
-- 若 `clock_domain != HARDWARE_CLOCK`，`metadata_header_ns` 与 `frame_timestamp_ns` 应接近；若偏差持续超过 5 ms，应在报告中标记该 topic 的 timestamp-domain 检查失败。
-- 若 `tools/realsense_bag_compare.py` 显示 image header 与 metadata header 偏移超过 5 ms，先按 rosbag image header 对齐，并在报告中标记 metadata header 与 image header 不一致。
+- 后续增强：若 `clock_domain == HARDWARE_CLOCK`，允许 `metadata_header_ns - frame_timestamp_ns` 存在大 offset，但其随时间的漂移应稳定；必要时按 topic 拟合线性/base-time 映射并写入报告。
+- 后续增强：若 `clock_domain != HARDWARE_CLOCK`，`metadata_header_ns` 与 `frame_timestamp_ns` 应接近；若偏差持续超过 5 ms，应在报告中标记该 topic 的 timestamp-domain 检查失败。
 
 ZMQ：
 
 - `source=1` GELLO：joint 和 gripper command 可线性插值；训练因果观测时用最近过去。
-- `source=2` robot：`q/dq/tau_J/tau_J_d/O_dP_EE` 可线性插值；`O_T_EE` 第一版按 16 个 float 线性插值并在报告说明，后续可升级为 SE(3) 插值。
+- `source=2` robot：第一版 timestamp alignment 只输出索引和 delta；`q/dq/tau_J/tau_J_d/O_dP_EE` 线性插值、`O_T_EE` 插值和后续 SE(3) 插值升级应放到 materialize / 数据生成阶段。
 - `source=3` gripper：`gPO/gCU` 默认最近帧，不做线性插值。
 - `source=4` spacemouse：按 GELLO input 槽位解释，需根据 `valid_mask` 区分。
 
 ## 暂停、恢复和异常段处理
 
-当前 MainController 只在 `COLLECTING` 状态写 demo buffer，因此暂停期间的主控 `.npz` 不包含样本。但恢复后时间戳会出现大间隔，对齐工具需要显式切段：
+当前 MainController 只在 `COLLECTING` 状态写 demo buffer，因此暂停期间的主控 `.npz` 不包含样本。第一版对齐模块不做显式切段，`segment_id` 全部为 `0`；恢复后时间戳大间隔的自动切段列为后续增强：
 
 - 优先从 `controller_events.jsonl` 读取 `pause_started`、`pause_done`、`demo_collecting`、`realsense_fatal_detected`、`realsense_restart_*`。
 - 如果事件缺失，按 stream gap 切段：
   - FT300S gap > 50 ms。
   - Xense/RealSense gap > 120 ms。
   - ZMQ gap > 80 ms。
-- 每段单独生成目标时间轴，不跨段插值。
-- RealSense fatal restart 后，重启前后必须分段；不要跨相机重启插值或最近帧匹配。
+- 后续增强中，每段单独生成目标时间轴，不跨段插值。
+- 后续增强中，RealSense fatal restart 后，重启前后必须分段；不要跨相机重启插值或最近帧匹配。
 
-注意一个当前实现风险：MainController 允许在 `PAUSED` 状态执行 `d`，但 FT300S/XenseTacSensor 服务端当前只在 `COLLECTING` 状态接受 `DEMO_DONE_REQ`。如果从暂停直接完成，可能拿不到 `saved_file`，进而无法读取完整 `.npy`。对齐工具应在 `saved_file is None` 时直接报错并提示先修正采集流程，或只生成主控索引级对齐。
+暂停状态直接完成 demo 已由 FT300S/XenseTacSensor 服务端支持：`PAUSED -> DEMO_DONE_REQ` 和 `PAUSED -> DEMO_DISCARD_REQ` 均为合法路径。若真实运行仍出现 `saved_file is None`，第一版对齐工具仍可基于主控 `.npz` 生成索引，但 source manifest 中对应完整 `.npy` 路径为空。
 
 ## 推荐输出
 
@@ -267,7 +275,7 @@ MainController 自动对齐默认文件：
 
 - `aligned_index.npz`
   - `t_ns`
-  - `segment_id`
+  - `segment_id`：当前第一版全部为 `0`，表示尚未切分 pause/restart/gap segment；真实分段支持列为后续增强。
   - `sample_valid`
   - `<stream>_index`
   - `<stream>_time_ns`
@@ -280,7 +288,7 @@ MainController 自动对齐默认文件：
   - base/mode/hz/tolerance 配置。
   - 每个 stream 的帧数、使用帧数、invalid 数量、最大/均值/中位数 `abs(delta_ns)`。
   - ZMQ 每个 source 的 clock offset 和 clock health。
-  - RealSense image-metadata 对比结果、`clock_domain` 分布、`image_header_ns - metadata_header_ns` 摘要、`metadata_header_ns - frame_timestamp_ns` 摘要。
+  - RealSense `clock_domain` 分布和缺失统计。
   - drop monitor 摘要。
 
 - `alignment_report.md`
@@ -294,8 +302,7 @@ MainController 自动对齐默认文件：
 不作为自动输出的文件：
 
 - `aligned_numeric.npz` 或其他实际训练数据文件不由主控自动生成。
-- `tools/align_demo_timestamps.py` 手动调用时可以通过参数选择是否直接生成实际数据，以及数据内包含哪些字段。
-- TODO：未来 materialize 工具读取已有 `alignment_config.json` / `aligned_index.npz` / `aligned_manifest.json` 生成实际数据文件；实现前需要确认数据集具体组织格式、字段命名和目录结构。
+- TODO：未来 materialize 工具读取已有 `alignment_config.json` / `aligned_index.npz` / `aligned_manifest.json` 生成实际数据文件；`--emit-data`、`--fields` 等字段选择参数应放在 materialize 工具中，而不是当前 timestamp alignment CLI 中。
 
 ## 实现步骤
 
@@ -309,13 +316,11 @@ MainController 自动对齐默认文件：
 ### 1. 读取和路径解析
 
 - 主控内部模块输入：`demo_dir`、`output_dir`、`base`、`mode`、`hz` 和暖机裁剪配置。
-- CLI 参数：`--demo-dir`、`--config`、`--base`、`--mode`、`--hz`、`--output-dir`。
+- CLI 参数：`--demo-dir`、`--alignment-base-source`、`--base`、`--mode`、`--hz`、`--output-dir`。若同时传入 `--base` 和 `--alignment-base-source`，以 `--base` 为准。
 - 启动暖机参数：`--start-trim-s`、可重复的 `--stream-start-trim <stream>=<seconds>`。
-- 手动 CLI 可选参数：`--emit-data`、`--fields <name,...>`，用于直接生成实际数据文件；主控自动调用不启用这些参数。
+- 当前 timestamp alignment CLI 不提供 `--emit-data` / `--fields`；实际数据 materialize 等待数据集格式确认后另行实现。
 - 读取 `manifest.json`。
-- 读取四个主控 `.npz`。
-- 用 `manifest.sensor_saved_files.ft300` 解析完整数据路径：绝对路径直接使用，否则拼接 `repo_root / "runtime_frames" / filename`。
-- 用 `manifest.sensor_saved_files.xense` 解析完整数据路径：绝对路径直接使用，否则拼接 `repo_root / "runtime_frames" / filename`。
+- 读取四个主控 `.npz`。当前第一版不读取 FT300S/Xense 完整 `.npy` 内容；只把 `manifest.sensor_saved_files.*` 解析后的路径写入 source manifest。
 - 检查 `rosbag_uri` 是否存在，并自动探测 storage backend。
 
 ### 2. 标准化 stream table
@@ -335,29 +340,27 @@ quality flags
 
 ### 3. 质量检查
 
-- frame id/seq/frame_number 连续性。
-- 时间单调性。
-- 主控索引和传感器 `.npy` 的 timestamp 差值。
-- ZMQ raw stamp 与 recv_time 的 offset/jitter。
-- RealSense metadata header 与 rosbag image header 对比。
-- RealSense `clock_domain` 分布和 `metadata_header_ns - frame_timestamp_ns` 关系检查。
+- 第一版输出每个 stream 的匹配数量、invalid 数量和 `abs(delta_ns)` 摘要。
+- 第一版输出 RealSense `clock_domain` 分布和缺失数量。
+- 后续增强：frame id/seq/frame_number 连续性、时间单调性、主控索引和传感器 `.npy` timestamp 差值、ZMQ raw stamp 与 recv_time 的 offset/jitter、`metadata_header_ns - frame_timestamp_ns` 关系检查。
 
-质量检查失败不一定中止，但 required stream 缺失、timestamp 非单调严重错误、ZMQ clock 漂移严重时应让命令返回非零，除非传入 `--allow-degraded`。
+第一版 required stream 缺失或目标时间轴为空会让命令失败；更细粒度质量门控列为后续增强。
 
 ### 4. 生成目标时间轴
 
 - `realsense:<topic>`：用该 topic 的有效帧时间。
+- `xense:0`：用 Xense `timestamp_ns_0`。
 - `robot`：用 ZMQ source 2 的有效帧时间。
 - `grid`：按 required streams 的交集时间范围生成等间隔网格。
 - 每个 segment 先计算 required stream 的 overlap 起点，再应用 `--start-trim-s` 和 `--stream-start-trim`；禁止通过平移原始时间戳来规避启动阶段不齐。
-- 根据暂停/重启/gap 分段，禁止跨段插值。
+- 当前第一版不做 pause/restart/gap 分段，`segment_id` 全部为 `0`；根据暂停/重启/gap 分段并禁止跨段插值列为后续增强。
 
 ### 5. 匹配和插值
 
 - 每个 stream 先用 `np.searchsorted` 找目标时间附近样本。
 - 因果模式取左侧样本。
 - 最近模式比较左右样本绝对差。
-- 连续流在最近模式使用 `np.interp` 或逐列插值。
+- 当前第一版不物化连续 payload，不做 `np.interp`；连续流插值属于后续 materialize / 数据生成阶段。
 - 不可插值流只输出索引和引用。
 
 ### 6. 保存结果和报告
@@ -367,9 +370,9 @@ quality flags
 - 保存 `aligned_manifest.json`。
 - 保存 `alignment_report.md`。
 - 更新 `manifest.alignment`。
-- 终端打印摘要：样本数、有效率、每个 stream 最大/中位 delta、ZMQ offset、RealSense 对比 verdict。
+- 终端打印摘要：独立 CLI 输出生成路径、样本数、有效数、base 和 warnings；更丰富摘要列为后续增强。
 
-主控自动调用到此结束，不生成实际训练数据。`tools/align_demo_timestamps.py` 手动调用时如传入 `--emit-data`，可按 `--fields` 选择字段直接生成数据文件；该路径仍需遵守连续数值流才可插值、图像和离散字段只输出索引/引用的规则。
+主控自动调用到此结束，不生成实际训练数据。实际训练数据生成留给未来 materialize 工具；该路径仍需遵守连续数值流才可插值、图像和离散字段只输出索引/引用的规则。
 
 ## 验收标准
 
@@ -379,23 +382,24 @@ quality flags
 - 因果模式不会选择未来帧。
 - nearest 模式能正确选择左右最近帧。
 - ZMQ offset 用稳健中位数修正后，delta 接近 0。
-- Xense 双传感器组合时间使用 `max(ts0, ts1)`。
-- 暂停 gap 不跨段插值。
+- Xense 作为 base 时使用 `timestamp_ns_0`，两路触觉传感器分别输出 index/time/delta/valid。
+- 后续增强：暂停 gap 不跨段插值。
 
 真实数据验收：
 
 - 对一个 `s -> d` demo，生成 `aligned/` 四个文件。
 - `aligned_manifest.json` 中每个 required stream 有效率大于 95%。
-- RealSense image header 与 metadata header 对比 95% 样本在 5 ms 内。
-- RealSense report 包含每个 topic 的 `clock_domain` 分布；`clock_domain != HARDWARE_CLOCK` 时 metadata header 与 frame timestamp 的差值 95% 样本在 5 ms 内，`HARDWARE_CLOCK` 时报告稳定 offset/漂移而不要求接近 0。
-- ZMQ 各 source 的 offset jitter 中位绝对偏差小于 5 ms；远端未同步时报告必须明确标记。
-- FT300S 主控索引和 `.npy` 时间戳按 frame_id 对齐，差值为 0 或仅有极小序列化差异。
-- Xense 主控索引和 `.npy` 时间戳按 frame_id 对齐，两个 sensor timestamp 均能匹配。
+- RealSense report 包含每个 topic 的 `clock_domain` 分布和缺失数量。
+- 后续增强验收：ZMQ 各 source 的 offset jitter 中位绝对偏差小于 5 ms；远端未同步时报告必须明确标记。
+- 后续增强验收：FT300S/Xense 主控索引和 `.npy` 时间戳按 frame_id 对齐，差值为 0 或仅有极小序列化差异。
 
 ## 需要优先修正或确认的点
 
-1. 修正暂停状态完成 demo 的服务端兼容性：FT300S/XenseTacSensor 应允许 `PAUSED -> DEMO_DONE_REQ` 和 `PAUSED -> DEMO_DISCARD_REQ`，否则 manifest 可能没有 `saved_file`。
+1. 暂停状态完成 demo 的服务端兼容性已确认：FT300S/XenseTacSensor 允许 `PAUSED -> DEMO_DONE_REQ` 和 `PAUSED -> DEMO_DISCARD_REQ`。
 2. MainController 的 RealSense metadata topic 应运行时发现，或至少根据 manifest 的 formal/debug_degraded required image topic list 约束后处理输入。
 3. 对齐工具应以 manifest 中的 RealSense readiness/post-check required topic list 为准，不硬编码具体相机数量。
 4. 远端 ZMQ producer 需要明确是否和主控主机做 NTP/PTP 同步。未同步时只能使用 offset 估计，精度受网络延迟影响。
-5. 后续主控代码应把 RealSense metadata JSON 中的 `clock_domain` 保存进 `realsense_metadata.npz`。保存前，对齐工具只能把 `frame_timestamp_ns/hw_timestamp_ns` 作为诊断字段，不能替代 ROS header stamp。
+5. 主控代码应持续保存 RealSense metadata JSON 中的 `clock_domain`；缺字段按 warning 处理，不改变采集状态。
+
+## TODO
+确认数据集具体组织形式

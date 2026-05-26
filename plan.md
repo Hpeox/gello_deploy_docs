@@ -32,6 +32,7 @@
   - 主控实时订阅 `/camX/camera/color/metadata` 和 `/camX/camera/depth/metadata`，不持续订阅 `image_raw`。
   - 开始或恢复录制前，主控会对 required image topics 做一次短暂 readiness baseline 检查。
   - 实时丢帧监控使用 metadata 的 `frame_number`、`header.stamp`、`frame_timestamp`、`hw_timestamp`。
+  - metadata JSON 中的 `clock_domain` 必须保存到 `realsense_metadata.npz`；如果单帧缺字段，保存为空值并告警，不导致采集失败。
   - 跨源对齐以 metadata `header_stamp_ns` 或 rosbag image `header.stamp` 为主时间；`frame_timestamp_ns` 必须结合 `clock_domain` 解释，`hw_timestamp_ns` 仅作诊断。
   - rosbag2 仍记录 image topic；离线可用 `tools/realsense_bag_compare.py` 验证 metadata header 与 image header 的对应关系。
 
@@ -198,9 +199,9 @@ topics 是否存在、message type 是否匹配、frame count 是否非零，并
 
 ### `d`: finish and save demo
 
-1. 向 FT300S/XenseTacSensor 发送 `DEMO_DONE_REQ`。
-2. 等待 ACK，并读取 ACK payload 中的 `saved_file`；默认最多等待 `sensor_flush_timeout_s=300`，只有显式配置为 `none` 或 `unbounded` 时才无界等待，等待期间周期性写进度日志。
-3. 调用 `/rosbag2_recorder/stop` 停止当前 recording。
+1. 同时向 FT300S/XenseTacSensor 发送 `DEMO_DONE_REQ`，并调用 `/rosbag2_recorder/stop` 停止当前 recording。
+2. 等待两个传感器 ACK 并读取 ACK payload 中的 `saved_file`，同时等待 rosbag stop 结果；默认最多等待 `sensor_flush_timeout_s=300`，只有显式配置为 `none` 或 `unbounded` 时才无界等待传感器 ACK，等待期间周期性写进度日志。
+3. 汇总 sensor finish、rosbag stop 和 RealSense rosbag post-check 结果。
 4. 保存主控侧 `.npz`、`manifest.json` 和告警统计。
 5. 若采集 `status` 为 `done`，调用 `main_controller/timestamp_alignment.py` 生成 `<demo_dir>/aligned/alignment_config.json`、`aligned_index.npz`、`aligned_manifest.json` 和 `alignment_report.md`，并把结果写入 `manifest.alignment`；自动对齐不生成实际训练数据文件。
 6. `done` 表示所有 required finish 操作完成。若任一 required sensor finish 失败，
@@ -229,11 +230,14 @@ topics 是否存在、message type 是否匹配、frame count 是否非零，并
 
 - MainController 内部需要新增 `main_controller/timestamp_alignment.py`，作为 `d` 收尾流程中的自动对齐模块；该模块只生成对齐配置、索引和报告，不生成 `aligned_numeric.npz` 等实际训练数据文件。
 - `tools/align_demo_timestamps.py` 是相似但独立的命令行对齐工具，不跨目录 import 主控对齐模块；允许从主控版本复制后按 CLI 场景修改。
+- 主控和独立 CLI 均支持 `--alignment-base-source realsense|xense`。默认 `realsense`；选择 `xense` 时等价于 `--base xense:0`，使用 `timestamp_ns_0` 作为目标时间轴。手动 CLI 的 `--base realsense:<topic>|xense:0|robot|grid` 优先级高于 base source。
+- Xense 两个触觉传感器在对齐索引中独立输出为 `xense_0_*` 和 `xense_1_*`；不生成两路固定偏差统计。
+- FT300S 在报告中按型号名显示为 `FT300S`，输出字段使用 `ft300s_*`，其中 `S` 不作为复数理解。
 - materialize 实际数据集只作为未来扩展提及；在确认数据集具体组织格式前，不规划本轮实现 `tools/materialize_aligned_data.py`。
 - 详细设计以 `timestamp_alignment_plan.md` 为准；主计划只保留关键约束。
 - 所有来源的原始时间戳必须分别保存，用于后处理对齐；后处理不得通过平移原始时间戳来掩盖启动阶段不齐。
-- 对齐阶段应从各模块实际保存路径读取完整传感器数据：若 `saved_file` 是绝对路径则直接使用，否则从仓库根目录 `./runtime_frames/<saved_file>` 读取；ZMQ 数据直接使用主控保存的 `zmq_telemetry.npz`。
-- 对于 XenseTacSensor 和 FT300S，必须等待 UDS `DEMO_DONE_REQ` ACK，并读取 ACK payload 中的 `saved_file` 后，再读取模块落盘文件。
+- 第一版对齐阶段使用主控保存的 `.npz` 时间戳索引、ZMQ 数据和 RealSense rosbag image header / metadata header；FT300S/XenseTacSensor 的 `saved_file` 路径只写入 alignment source manifest，完整 `.npy` 内容读取和主控索引交叉校验列为后续增强。
+- 对于 XenseTacSensor 和 FT300S，必须等待 UDS `DEMO_DONE_REQ` ACK，并读取 ACK payload 中的 `saved_file` 后，再写 manifest 和启动自动对齐。
 - RealSense 对齐优先使用 rosbag image `header.stamp` 或 metadata `header_stamp_ns`；`frame_timestamp_ns` 必须结合 `clock_domain` 判断，`HARDWARE_CLOCK` 需要按 topic 检查稳定 offset / 漂移，`SYSTEM_TIME` 或 `GLOBAL_TIME` 才期望接近 header time。
 - 对齐工具应提供 `--start-trim-s` 和可重复的 `--stream-start-trim <stream>=<seconds>`，用于裁掉启动暖机段；这些参数只裁剪样本，不修改原始时间戳。
 - 默认只对 `manifest.status == "done"` 的 demo 自动生成对齐索引和报告；`failed` 和 `discarded` manifest 只用于诊断，除非独立 CLI 显式启用 degraded / index-only 模式。
@@ -255,7 +259,7 @@ topics 是否存在、message type 是否匹配、frame count 是否非零，并
   - 远程 relay 可用显式 endpoint 覆盖。
   - ZMQ 在 pause/finalizing 时持续发送，验证主控仍持续 drain。
   - mock 环境下重点覆盖正常连续 demo 流程：`s -> d -> s -> d` 和 `s -> x -> s -> d`；验证 `d` 后自动对齐结束前不能进入下一次采集，`d/x` 后 ZMQ 仍持续 drain，且 demo 间数据不污染下一段或上一段 demo buffer。
-  - 覆盖自动对齐成功和失败路径：成功时写入 `manifest.alignment.status = "succeeded"`，失败时只写 `manifest.alignment.status = "failed"`，不改写采集 `status`。
+  - 覆盖自动对齐成功和失败路径：成功时写入 `manifest.alignment.status = "done"`，失败时只写 `manifest.alignment.status = "failed"`，不改写采集 `status`。
   - 验证 `tools/align_demo_timestamps.py` 可独立重跑对齐，且不跨目录 import `main_controller/timestamp_alignment.py`。
   - 真实 FT300S/XenseTacSensor 下执行 `s -> p -> s -> d -> q`、`s -> d -> s -> d -> q`、`s -> x -> s -> d -> q`，检查 manifest、传感器 `.npy`、主控 `.npz`、rosbag、告警统计齐全。
 
@@ -264,5 +268,5 @@ topics 是否存在、message type 是否匹配、frame count 是否非零，并
 - 默认 ZMQ endpoint 为 `tcp://127.0.0.1:6000`。
 - ZMQ telemetry 是必须模块，不能通过普通参数关闭。
 - RealSense metadata topic 对当前启用相机可用。
-- 后续代码任务需要把 RealSense metadata JSON 中的 `clock_domain` 保存到 `realsense_metadata.npz`。
+- RealSense metadata JSON 中的 `clock_domain` 保存到 `realsense_metadata.npz`；缺字段按 warning 处理。
 - 主控负责启动、控制、采集索引、丢帧监控、manifest 和自动对齐索引/报告；实际训练数据集 materialize 需等数据集具体组织格式确认后另行实现。

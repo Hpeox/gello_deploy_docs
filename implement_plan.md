@@ -4,7 +4,7 @@
 
 `main_controller` 做成 ROS2 `ament_python` 包，但主体按普通 Python 控制程序设计。通过 `ros2 run main_controller main_controller` 启动，内部使用线程、队列、子进程管理、UDS socket、ZMQ 和少量 rclpy service/subscriber。
 
-主控不持续订阅 RealSense `image_raw`。实时监控依赖 `/camX/camera/color/metadata` 和 `/camX/camera/depth/metadata`；开始或恢复录制前会短暂订阅 required image topics 做 readiness baseline，rosbag2 仍负责记录 image topic。ZMQ receiver 必须从主控启动后一直读取，直到主控退出。后续实现中，`d` 的 `FINALIZING` 流程还需要在采集保存后自动调用主控内部时间戳对齐模块，生成对齐配置、索引和报告。
+主控不持续订阅 RealSense `image_raw`。实时监控依赖 `/camX/camera/color/metadata` 和 `/camX/camera/depth/metadata`；开始或恢复录制前会短暂订阅 required image topics 做 readiness baseline，rosbag2 仍负责记录 image topic。ZMQ receiver 必须从主控启动后一直读取，直到主控退出。`d` 的 `FINALIZING` 流程会在采集保存后自动调用主控内部时间戳对齐模块，生成对齐配置、索引和报告。
 
 ## 当前已实现内容
 
@@ -13,12 +13,12 @@
 ### 已落地模块
 
 - 包入口：`setup.py` 已新增 `main_controller = main_controller.main:main`。
-- 依赖声明：`package.xml` 已补充 `rosbag2_interfaces`、`realsense2_camera_msgs`、`python3-zmq`、`python3-numpy`。
+- 依赖声明：`package.xml` 已补充 `rosbag2_interfaces`、`rosidl_runtime_py`、`sensor_msgs`、`realsense2_camera_msgs`、`python3-zmq`、`python3-numpy`。
 - `config.py`：集中定义默认路径、ZMQ endpoint、UDS socket、频率阈值、RealSense metadata topic、required image topic、formal/debug_degraded capture mode、rosbag count-skew threshold 和 fatal error pattern。
 - `main.py`：实现 CLI、命令队列、主状态机、demo start/pause/done/discard/stop 流程，以及 RealSense fatal error 自动暂停和重启路径。
 - `uds_client.py`：实现 FT300S/XenseTacSensor 共用 UDS client，包含协议 pack/unpack、自动连接、后台接收、`INIT_READY` 等待、ACK 等待、断连唤醒 pending ACK waiter 和可配置 flush timeout。
 - `zmq_telemetry.py`：在 MainController 内独立实现 ZMQ 504-byte telemetry frame 解包和 always-on receiver，不 import `Zmq_Ref`。
-- `realsense_metadata.py`：实现 RealSense metadata 订阅与 JSON 解析，输出 `frame_number`、`header.stamp`、`frame_timestamp`、`hw_timestamp` 等轻量 timing event，不订阅 `image_raw`；当前尚未把 metadata JSON 中的 `clock_domain` 保存到 `realsense_metadata.npz`，后续需要补充。
+- `realsense_metadata.py`：实现 RealSense metadata 订阅与 JSON 解析，输出 `frame_number`、`header.stamp`、`frame_timestamp`、`hw_timestamp` 和 `clock_domain` 等轻量 timing event，不订阅 `image_raw`；`clock_domain` 缺失时保存空值并告警，不导致采集失败。
 - `realsense_image_guard.py`：定义 RealSense image topic baseline、readiness result 和 rosbag metadata post-check。
 - `rosbag_control.py`：封装 `/rosbag2_recorder/record`、`/resume`、`/pause`、`/stop` service call，并提供 image readiness / recorded metadata validation 入口。
 - `processes.py`：实现子进程启动、日志捕获、fatal pattern 检测、SIGINT/SIGTERM/SIGKILL 停止和重启。
@@ -31,7 +31,7 @@
 - 主控启动时等待 ZMQ 首个合法 frame、等待 FT300S/XenseTacSensor UDS 连接和 `INIT_READY`。
 - `s`：创建或恢复 demo，发送两个传感器 `START_REQ`，先验证 required RealSense image topics readiness，首次 segment 调用 rosbag2 `record`，随后调用 `resume`。
 - `p`：发送两个传感器 `PAUSE_REQ`，调用 rosbag2 `pause`，不再用 `stop` 暂停；若任一 required sensor pause 失败，写 `failed` manifest、记录 per-sensor command result，并进入 `ERROR -> STOPPING -> STOPPED`。
-- `d`：进入 `FINALIZING`，发送 `DEMO_DONE_REQ`，默认在有限 `sensor_flush_timeout_s` 内等待 ACK 和 `saved_file`，期间周期性写进度日志；显式配置 `none` / `unbounded` 时允许无界等待，这是操作者为超长 sensor flush 保留数据而接受的预期模式。随后 stop rosbag，使用实际 rosbag URI 做 required image topic metadata post-check，并保存 `.npz`/manifest。只有 required sensors finished、rosbag stop 成功且 required post-check 通过时 status 才为 `done`；sensor finish、有限 flush timeout、UDS disconnect、rosbag stop 或 post-check 失败时 status 为 `failed`，并记录 command result 或 post-check result。
+- `d`：进入 `FINALIZING`，并发启动 FT300S `DEMO_DONE_REQ`、Xense `DEMO_DONE_REQ` 和 rosbag `stop`；默认在有限 `sensor_flush_timeout_s` 内等待 sensor ACK 和 `saved_file`，期间周期性写进度日志；显式配置 `none` / `unbounded` 时允许无界等待 sensor ACK，这是操作者为超长 sensor flush 保留数据而接受的预期模式。随后使用实际 rosbag URI 做 required image topic metadata post-check，并保存 `.npz`/manifest。只有 required sensors finished、rosbag stop 成功且 required post-check 通过时 status 才为 `done`；sensor finish、有限 flush timeout、UDS disconnect、rosbag stop 或 post-check 失败时 status 为 `failed`，并记录 command result 或 post-check result。
 - `x`：发送 `DEMO_DISCARD_REQ`，stop rosbag，写 lightweight discarded manifest，然后丢弃当前 demo buffer；成功 discard 不保存高频 `.npz`，manifest 中 `npz` 为空并包含 `frame_counts`。只有用户 discard transaction 成功完成时 status 才为 `discarded`，sensor discard 或 rosbag stop 失败时 status 为 `failed`。
 - `q`：停止 rosbag、传感器、ZMQ、RealSense metadata monitor 和子进程。
 - RealSense stdout/stderr 中检测到 `Hardware Error` 或 `Depth stream start failure` 时，会向主控命令队列投递 fatal event；若当前为 `COLLECTING`，先自动暂停，再重启 RealSense camera launch。
@@ -51,9 +51,8 @@
 - 尚未验证 conda 启动命令在当前 shell/ROS2 启动方式下是否需要额外环境清理。
 - 尚未验证 `ros2 run main_controller main_controller` 的 colcon build/install 流程。
 - 尚未做真实 metadata topic 与当前启用相机列表的运行时发现；目前 topic 来自配置默认值。
-- 尚未把 RealSense metadata JSON 中的 `clock_domain` 写入主控 `realsense_metadata.npz`；后处理对齐阶段在该字段落盘前只能把 `frame_timestamp_ns/hw_timestamp_ns` 作为诊断字段。
-- 尚未实现 `main_controller/timestamp_alignment.py` 主控内部自动对齐模块；该模块应只生成 `alignment_config.json`、`aligned_index.npz`、`aligned_manifest.json` 和 `alignment_report.md`，不生成实际训练数据文件。
-- 尚未实现 `tools/align_demo_timestamps.py` 独立 CLI 对齐工具；该工具可以与主控内部模块保持相似逻辑，但不能跨目录 import `main_controller.timestamp_alignment`。
+- 已新增 `main_controller/timestamp_alignment.py` 主控内部自动对齐模块；该模块只生成 `alignment_config.json`、`aligned_index.npz`、`aligned_manifest.json` 和 `alignment_report.md`，不生成实际训练数据文件。
+- 已新增 `tools/align_demo_timestamps.py` 独立 CLI 对齐工具；该工具不跨目录 import `main_controller.timestamp_alignment`。
 - materialize 实际数据集暂不列为本轮待实现模块；需要先在 `timestamp_alignment_plan.md` 中保留 TODO，等待确认数据集具体组织格式。
 - 尚未做真实 RealSense fatal log 注入到子进程 stdout/stderr 的端到端测试。
 - 尚未做真实 demo 采集输出目录、`.npz` 内容和 manifest 的完整验收。
@@ -88,7 +87,7 @@
 - `buffers.py`：管理 demo buffer，完成后保存 `.npz`。
 - `processes.py`：启动/停止/重启 FT300S、XenseTacSensor、RealSense launch。
 - `rosbag_control.py`：封装 `/rosbag2_recorder/record`、`/resume`、`/pause`、`/stop`。
-- `timestamp_alignment.py`：待新增；作为 MainController 内部自动对齐模块，在 `FINALIZING` 中生成对齐配置、索引和报告。
+- `timestamp_alignment.py`：作为 MainController 内部自动对齐模块，在 `FINALIZING` 中生成对齐配置、索引和报告。主控 CLI 支持 `--alignment-base-source realsense|xense`，默认 RealSense；选择 Xense 时使用 `timestamp_ns_0`。
 
 `tools/align_demo_timestamps.py` 是待新增的独立命令行对齐工具，不属于 `main_controller` 包内部模块；它不跨目录 import `main_controller.timestamp_alignment`，可以从主控内部实现复制后按 CLI 需求演化。
 
@@ -170,18 +169,18 @@
 
 ### `d`: finish and save demo
 
-1. 发送 `DEMO_DONE_REQ`。
-2. 进入 `FINALIZING`，等待传感器 ACK 和 `saved_file`。
+1. 进入 `FINALIZING`，并发发送两个传感器 `DEMO_DONE_REQ`，同时调用 `/rosbag2_recorder/stop` 停止当前 recording。
+2. 等待传感器 ACK / `saved_file` 和 rosbag stop 结果。
 3. 传感器 flush 使用可配置 `sensor_flush_timeout_s`，并周期性打印进度和写 log；
    默认有限超时；显式配置为 `none` / `unbounded` 时才允许无界等待。
    无界等待是预期的操作者模式，不生成 `ack_timeout`，只由 ACK、对应 sensor
    `ERROR`、UDS disconnect 或主控停止唤醒。
-4. 调用 `/rosbag2_recorder/stop` 停止当前 recording。
+4. 汇总 sensor finish 和 rosbag stop 结果。
 5. 若 rosbag `stop` 失败，跳过 RealSense rosbag post-check，写 `status: "failed"`
    manifest，保留可用 sensor `saved_file` 和 controller `.npz`，并进入
    `ERROR -> STOPPING -> STOPPED`。
 6. 保存 `.npz` 和 `manifest.json`。
-7. 若采集 `status` 为 `done`，调用 `main_controller/timestamp_alignment.py` 自动生成 `<demo_dir>/aligned/alignment_config.json`、`aligned_index.npz`、`aligned_manifest.json` 和 `alignment_report.md`。
+7. 若采集 `status` 为 `done`，调用 `main_controller/timestamp_alignment.py` 自动生成 `<demo_dir>/aligned/alignment_config.json`、`aligned_index.npz`、`aligned_manifest.json` 和 `alignment_report.md`。默认以 RealSense 视觉时间轴为基准，也可通过 `--alignment-base-source xense` 使用 Xense `timestamp_ns_0`。
 8. 将自动对齐结果写入 `manifest.alignment`。自动对齐失败只设置 `manifest.alignment.status = "failed"` 和错误详情，不改写采集 `status`。
 
 ### `x`: discard demo
@@ -318,7 +317,7 @@ readiness 和 rosbag 记录校验；精确 fps/rate 验证留作后续扩展。
   - ZMQ 在 pause/finalizing 时持续发送，验证主控仍持续 drain。
   - 正常连续 demo 流程 `s -> d -> s -> d`，验证每段 demo 独立保存，且 `d` 后自动对齐结束前不能开始下一次采集，`WAIT_START` 期间 ZMQ 持续 drain。
   - 丢弃后继续采集流程 `s -> x -> s -> d`，验证 discard 写入 lightweight `status: "discarded"` manifest、不保存高频 `.npz`，且 `x` 后 `WAIT_START` 期间 ZMQ 持续 drain。
-  - 自动对齐成功路径只生成 `alignment_config.json`、`aligned_index.npz`、`aligned_manifest.json` 和 `alignment_report.md`，并写入 `manifest.alignment.status = "succeeded"`。
+  - 自动对齐成功路径只生成 `alignment_config.json`、`aligned_index.npz`、`aligned_manifest.json` 和 `alignment_report.md`，并写入 `manifest.alignment.status = "done"`。
   - 自动对齐失败路径只写入 `manifest.alignment.status = "failed"` 和错误详情，不改写采集 `status`。
   - `tools/align_demo_timestamps.py` 可独立重跑对齐，且不跨目录 import `main_controller.timestamp_alignment`。
   - 注入 `Hardware Error` 和 `Depth stream start failure` 日志，验证 RealSense 自动暂停和重启。
