@@ -6,7 +6,7 @@
 
 第一版目标：
 
-- MainController 在用户输入 `d` 后，于 `FINALIZING` 阶段调用 `main_controller/timestamp_alignment.py`，输入一个已完成 demo 目录，例如 `runtime_sessions/session_*/demos/demo_*/`。
+- MainController 在用户输入 `d` 后，于 `FINALIZING` 阶段调用 `main_controller/timestamp_alignment.py`，输入一个已完成 demo 目录，例如 `runtime_sessions/demos/demo_*/`。
 - 读取 `manifest.json`、主控保存的 `.npz`、RealSense rosbag image header；FT300S/XenseTacSensor 自己落盘的 `.npy` 路径记录到 source manifest，第一版不读取其内容。
 - 统一转换为 `int64` Unix epoch nanoseconds。
 - 自动生成对齐配置、对齐索引、对齐 manifest 和人工报告，保留每个来源的原始时间戳、匹配索引、时间差和有效性 mask。
@@ -25,15 +25,16 @@
 
 ### MainController manifest
 
-位置：`runtime_sessions/session_*/demos/demo_*/manifest.json`
+位置：`runtime_sessions/demos/demo_*/manifest.json`
 
 关键字段：
 
 - `started_ns`：主控创建 demo 时的 `time.time_ns()`，早于传感器 ACK 和 rosbag resume，只能作为粗边界。
 - `finished_ns`：主控保存 manifest 时的 `time.time_ns()`，晚于传感器 flush 和 rosbag stop，只能作为粗边界。`FINALIZING` 中传感器 `DEMO_DONE_REQ` 与 rosbag `stop` 会并发发出；若本次采集显式使用 `sensor_flush_timeout_s=none` / `unbounded`，该边界仍可能明显晚于采集停止时刻，这是预期的无界 flush 等待结果，离线对齐不应把这段等待时间解释为有效采集窗口。
-- `rosbag_uri`：当前 demo 的 rosbag 目录。
-- `sensor_saved_files.ft300`、`sensor_saved_files.xense`：传感器服务 ACK 返回的 `.npy` 文件名。
-- `npz.ft300`、`npz.xense`、`npz.realsense`、`npz.zmq`：主控保存的时间戳索引。
+- `run_id`：本 demo 所属的 MainController 运行 ID。
+- `rosbag_uri`：当前 demo 的 rosbag 目录，相对 demo 目录保存，通常为 `rosbag`。
+- `sensor_paths.ft300`、`sensor_paths.xense`：可直接用于后处理的 `.npy` 路径，相对仓库根保存，例如 `runtime_frames/data_FT_*.npy`。
+- `npz.ft300`、`npz.xense`、`npz.realsense`、`npz.zmq`：主控保存的时间戳索引，相对 demo 目录保存。
 - `drop_monitors`：各来源丢帧和最大间隔统计。
 - `realsense_restart_events`：RealSense 重启时间点。
 - `alignment`：自动对齐结果字段。采集 `status` 只表示 `done` / `discarded` / `failed` 采集事务；对齐成功、失败或跳过分别写入 `manifest.alignment.status`，不得改写采集 `status`。
@@ -47,11 +48,11 @@
 - `recv_time_ns`：主控 UDS 收到 `FRAME_READY` 时的 `time.time_ns()`。
 - `recv_monotonic_ns`：主控 UDS 收到消息时的 `time.monotonic_ns()`。
 
-完整数据：`./runtime_frames/<saved_file>`
+完整数据：`runtime_frames/<saved_file>`
 
-- 文件名来自 `manifest.sensor_saved_files.ft300`。
-- `./runtime_frames` 指仓库根目录下的 `runtime_frames`，例如 `/home/robot/Desktop/gello-deploy/runtime_frames`。
-- 路径解析规则：如果 `saved_file` 是绝对路径，直接使用；否则拼接为 `repo_root / "runtime_frames" / saved_file`。
+- 路径来自 `manifest.sensor_paths.ft300`。
+- `runtime_frames` 指仓库根目录下的 `runtime_frames`，例如 `/home/robot/Desktop/gello-deploy/runtime_frames`。
+- 路径解析规则：拼接为 `repo_root / manifest.sensor_paths.ft300`。
 - 数据结构是 `np.load(..., allow_pickle=True).item()`，包含 `events` 和 `frames_data`。
 - `frames_data["00000"]["ft300_timestamp_ns"]` 应与主控索引中的 `timestamp_ns` 按 `frame_id` 对应。
 - wrench/力矩等完整值在同一个 per-frame dict 中。
@@ -69,11 +70,11 @@
 - `recv_time_ns`
 - `recv_monotonic_ns`
 
-完整数据：`./runtime_frames/<saved_file>`
+完整数据：`runtime_frames/<saved_file>`
 
-- 文件名来自 `manifest.sensor_saved_files.xense`。
-- `./runtime_frames` 指仓库根目录下的 `runtime_frames`，例如 `/home/robot/Desktop/gello-deploy/runtime_frames`。
-- 路径解析规则：如果 `saved_file` 是绝对路径，直接使用；否则拼接为 `repo_root / "runtime_frames" / saved_file`。
+- 路径来自 `manifest.sensor_paths.xense`。
+- `runtime_frames` 指仓库根目录下的 `runtime_frames`，例如 `/home/robot/Desktop/gello-deploy/runtime_frames`。
+- 路径解析规则：拼接为 `repo_root / manifest.sensor_paths.xense`。
 - 数据结构是 `np.load(..., allow_pickle=True).item()`，包含 `events` 和 `frames_data`。
 - `frames_data["00000"]["OG000544_timestamp_ns"]`、`frames_data["00000"]["OG001009_timestamp_ns"]` 分别对应两个触觉传感器。
 - 当前第一版对齐只使用主控索引 `xense_timestamps.npz`；完整 `.npy` 读取与 timestamp 交叉校验列为后续增强。
@@ -253,7 +254,7 @@ ZMQ：
 
 当前 MainController 只在 `COLLECTING` 状态写 demo buffer，因此暂停期间的主控 `.npz` 不包含样本。第一版对齐模块不做显式切段，`segment_id` 全部为 `0`；恢复后时间戳大间隔的自动切段列为后续增强：
 
-- 优先从 `controller_events.jsonl` 读取 `pause_started`、`pause_done`、`demo_collecting`、`realsense_fatal_detected`、`realsense_restart_*`。
+- 优先从对应 `run_id` 的 `controller_events_run_*.jsonl` 读取 `pause_started`、`pause_done`、`demo_collecting`、`realsense_fatal_detected`、`realsense_restart_*`。
 - 如果事件缺失，按 stream gap 切段：
   - FT300S gap > 50 ms。
   - Xense/RealSense gap > 120 ms。
@@ -316,11 +317,11 @@ MainController 自动对齐默认文件：
 ### 1. 读取和路径解析
 
 - 主控内部模块输入：`demo_dir`、`output_dir`、`base`、`mode`、`hz` 和暖机裁剪配置。
-- CLI 参数：`--demo-dir`、`--alignment-base-source`、`--base`、`--mode`、`--hz`、`--output-dir`。若同时传入 `--base` 和 `--alignment-base-source`，以 `--base` 为准。
+- CLI 参数：`--demo-dir`、`--repo-root`、`--alignment-base-source`、`--base`、`--mode`、`--hz`、`--output-dir`。若同时传入 `--base` 和 `--alignment-base-source`，以 `--base` 为准。
 - 启动暖机参数：`--start-trim-s`、可重复的 `--stream-start-trim <stream>=<seconds>`。
 - 当前 timestamp alignment CLI 不提供 `--emit-data` / `--fields`；实际数据 materialize 等待数据集格式确认后另行实现。
 - 读取 `manifest.json`。
-- 读取四个主控 `.npz`。当前第一版不读取 FT300S/Xense 完整 `.npy` 内容；只把 `manifest.sensor_saved_files.*` 解析后的路径写入 source manifest。
+- 读取四个主控 `.npz`。当前第一版不读取 FT300S/Xense 完整 `.npy` 内容；只把 `manifest.sensor_paths.*` 写入 source manifest。
 - 检查 `rosbag_uri` 是否存在，并自动探测 storage backend。
 
 ### 2. 标准化 stream table
