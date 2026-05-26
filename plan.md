@@ -200,7 +200,7 @@ topics 是否存在、message type 是否匹配、frame count 是否非零，并
 ### `d`: finish and save demo
 
 1. 同时向 FT300S/XenseTacSensor 发送 `DEMO_DONE_REQ`，并调用 `/rosbag2_recorder/stop` 停止当前 recording。
-2. 等待两个传感器 ACK 并读取 ACK payload 中的 `saved_file`，同时等待 rosbag stop 结果；默认最多等待 `sensor_flush_timeout_s=300`，只有显式配置为 `none` 或 `unbounded` 时才无界等待传感器 ACK，等待期间周期性写进度日志。
+2. 等待两个传感器 ACK 并读取 ACK payload 中的 `saved_file` filename，同时等待 rosbag stop 结果；默认最多等待 `sensor_flush_timeout_s=300`，只有显式配置为 `none` 或 `unbounded` 时才无界等待传感器 ACK，等待期间周期性写进度日志。
 3. 汇总 sensor finish、rosbag stop 和 RealSense rosbag post-check 结果。
 4. 保存主控侧 `.npz`、`manifest.json` 和告警统计。
 5. 若采集 `status` 为 `done`，调用 `main_controller/timestamp_alignment.py` 生成 `<demo_dir>/aligned/alignment_config.json`、`aligned_index.npz`、`aligned_manifest.json` 和 `alignment_report.md`，并把结果写入 `manifest.alignment`；自动对齐不生成实际训练数据文件。
@@ -253,7 +253,7 @@ unexpected exit 发生在 active demo 时，与 `q` 使用同一 active-demo abo
 - 详细设计以 `timestamp_alignment_plan.md` 为准；主计划只保留关键约束。
 - 所有来源的原始时间戳必须分别保存，用于后处理对齐；后处理不得通过平移原始时间戳来掩盖启动阶段不齐。
 - 第一版对齐阶段使用主控保存的 `.npz` 时间戳索引、ZMQ 数据和 RealSense rosbag image header / metadata header；FT300S/XenseTacSensor 的 `saved_file` 路径只写入 alignment source manifest，完整 `.npy` 内容读取和主控索引交叉校验列为后续增强。
-- 对于 XenseTacSensor 和 FT300S，必须等待 UDS `DEMO_DONE_REQ` ACK，并读取 ACK payload 中的 `saved_file` 后，再写 manifest 和启动自动对齐。
+- 对于 XenseTacSensor 和 FT300S，必须等待 UDS `DEMO_DONE_REQ` ACK，并读取 ACK payload 中的 `saved_file` filename 后，再写 repo-root 相对 `sensor_paths` 并启动自动对齐；`saved_file` 不是任意路径 channel。
 - RealSense 对齐优先使用 rosbag image `header.stamp` 或 metadata `header_stamp_ns`；`frame_timestamp_ns` 必须结合 `clock_domain` 判断，`HARDWARE_CLOCK` 需要按 topic 检查稳定 offset / 漂移，`SYSTEM_TIME` 或 `GLOBAL_TIME` 才期望接近 header time。
 - 对齐工具应提供 `--start-trim-s` 和可重复的 `--stream-start-trim <stream>=<seconds>`，用于裁掉启动暖机段；这些参数只裁剪样本，不修改原始时间戳。
 - 默认只对 `manifest.status == "done"` 的 demo 自动生成对齐索引和报告；`failed` 和 `discarded` manifest 只用于诊断，除非独立 CLI 显式启用 degraded / index-only 模式。
