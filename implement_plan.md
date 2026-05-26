@@ -296,6 +296,18 @@ finish 会进入 `ERROR -> STOPPING -> STOPPED`，避免主控状态与物理 se
 passed；`discarded` 表示用户 discard 成功完成；`failed` 表示系统或 command transaction
 未成功。时间戳对齐结果不复用采集 `status`，而是写入 `manifest.alignment.status`。
 
+active demo 中的 `q`、ZMQ receiver fatal、RealSense metadata fatal、UDS 非命令期
+disconnect、required subprocess unexpected exit 统一走 active-demo abort：并发执行
+FT300S/XenseTacSensor `STOP_REQ` 和 rosbag `stop`，写 `status: "failed"` manifest，
+保存已有主控侧 `.npz`，并记录 `failure_stage`、`failure_reason`、per-operation
+command result、`frame_counts` 和已有 `sensor_paths`。`STOP_REQ` ACK payload 中的
+`saved_file` 是 best-effort optional 字段；正常退出、无 buffered frame、flush 失败或
+sensor 已无 active demo 时可能不存在，缺失只让对应 `sensor_paths` 为 `None`。active
+abort 不发送 `DEMO_DONE_REQ` / `DEMO_DISCARD_REQ`，也不运行自动 timestamp alignment。
+异步 fatal 完成 manifest 后进入 `ERROR -> STOPPING -> STOPPED`；用户 `q` 完成 manifest
+后进入 `STOPPING -> STOPPED`。RealSense launch fatal 只有在自动暂停成功后才重启，
+`pause_demo()` 失败或主控已停止/错误时不得重启相机进程。
+
 RealSense image topic list 是正式采集的权威 required list。formal 模式默认要求
 `cam1` 到 `cam4` 的 color `image_raw` 和 `aligned_depth_to_color/image_raw` 共 8 个
 topic。`debug_degraded` 模式必须显式配置 topic 子集，且该子集必须来自 formal baseline。

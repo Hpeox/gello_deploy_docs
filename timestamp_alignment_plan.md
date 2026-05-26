@@ -33,10 +33,10 @@
 - `finished_ns`：主控保存 manifest 时的 `time.time_ns()`，晚于传感器 flush 和 rosbag stop，只能作为粗边界。`FINALIZING` 中传感器 `DEMO_DONE_REQ` 与 rosbag `stop` 会并发发出；若本次采集显式使用 `sensor_flush_timeout_s=none` / `unbounded`，该边界仍可能明显晚于采集停止时刻，这是预期的无界 flush 等待结果，离线对齐不应把这段等待时间解释为有效采集窗口。
 - `run_id`：本 demo 所属的 MainController 运行 ID。
 - `rosbag_uri`：当前 demo 的 rosbag 目录，相对 demo 目录保存，通常为 `rosbag`。
-- `sensor_paths.ft300`、`sensor_paths.xense`：可直接用于后处理的 `.npy` 路径，相对仓库根保存，例如 `runtime_frames/data_FT_*.npy`。
+- `sensor_paths.ft300`、`sensor_paths.xense`：可直接用于后处理的 `.npy` 路径，相对仓库根保存，例如 `runtime_frames/data_FT_*.npy`。active-demo abort 使用 `STOP_REQ` 尝试 flush sensor，因此 `saved_file` 是 best-effort optional 字段；缺失时对应路径为 `None`。
 - `npz.ft300`、`npz.xense`、`npz.realsense`、`npz.zmq`：主控保存的时间戳索引，相对 demo 目录保存。
-- `drop_monitors`：各来源丢帧和最大间隔统计。
-- `realsense_restart_events`：RealSense 重启时间点。
+- `drop_monitors`：本 demo 内各来源丢帧和最大间隔统计，不包含前后 demo 的累计值。
+- `realsense_restart_events`：本 demo 内 RealSense 重启时间点；run-wide 累计值使用独立的 `run_realsense_restart_*` 字段。
 - `alignment`：自动对齐结果字段。采集 `status` 只表示 `done` / `discarded` / `failed` 采集事务；对齐成功、失败或跳过分别写入 `manifest.alignment.status`，不得改写采集 `status`。
 
 ### FT300S
@@ -253,6 +253,10 @@ ZMQ：
 ## 暂停、恢复和异常段处理
 
 当前 MainController 只在 `COLLECTING` 状态写 demo buffer，因此暂停期间的主控 `.npz` 不包含样本。第一版对齐模块不做显式切段，`segment_id` 全部为 `0`；恢复后时间戳大间隔的自动切段列为后续增强：
+
+active demo 中发生 `q`、ZMQ receiver fatal、RealSense metadata fatal、UDS 非命令期
+disconnect 或 required subprocess unexpected exit 时，采集 manifest 写
+`status: "failed"`，保存已有主控侧 `.npz` 供诊断，但不运行自动 timestamp alignment。
 
 - 优先从对应 `run_id` 的 `controller_events_run_*.jsonl` 读取 `pause_started`、`pause_done`、`demo_collecting`、`realsense_fatal_detected`、`realsense_restart_*`。
 - 如果事件缺失，按 stream gap 切段：

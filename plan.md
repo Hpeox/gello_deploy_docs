@@ -222,9 +222,25 @@ topics 是否存在、message type 是否匹配、frame count 是否非零，并
 
 ### `q`: stop all
 
-1. 若正在采集或暂停，先安全停止当前 demo/recording。
-2. 向 FT300S/XenseTacSensor 发送 `STOP_REQ`。
-3. 关闭 ZMQ、ROS node、子进程。
+1. 若正在 `FINALIZING`，等待保存和自动对齐流程结束后再退出。
+2. 若正在采集或暂停，进入 active-demo abort：并发停止 rosbag recording，向
+   FT300S/XenseTacSensor 发送 `STOP_REQ`，写入 `status: "failed"` manifest，
+   保存已有主控侧 `.npz`，记录 `failure_stage`、`failure_reason`、per-operation
+   command result、`frame_counts` 和已有 `sensor_paths`。`STOP_REQ` ACK 中的
+   `saved_file` 是 best-effort optional 字段；缺失时对应 `sensor_paths` 为 `None`，
+   不阻止 manifest 写入。
+3. active-demo abort 不发送 `DEMO_DONE_REQ` / `DEMO_DISCARD_REQ`，也不运行自动
+   timestamp alignment；`status: "discarded"` 仍只表示用户 `x` 成功完成。
+4. 关闭 ZMQ、ROS node、子进程。
+
+### asynchronous fatal handling
+
+ZMQ receiver fatal、RealSense metadata fatal、UDS 非命令期断连、required subprocess
+unexpected exit 发生在 active demo 时，与 `q` 使用同一 active-demo abort 保存策略，
+但状态路径为 `ERROR -> STOPPING -> STOPPED`。无 active demo 时直接进入
+`ERROR -> STOPPING -> STOPPED` 并清理资源。RealSense launch fatal 只在自动暂停成功
+后重启；若 `pause_demo()` 失败或主控已处于 `ERROR` / `STOPPING` / `STOPPED`，不得再
+重启相机进程。
 
 ## Timestamp Alignment
 
