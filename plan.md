@@ -21,7 +21,7 @@
   - 使用 `zmq.Poller` 阻塞接收，不使用 1ms 空轮询。
   - demo 间保持读取，并维护环形缓冲或直接丢弃非 demo 数据。
 - 启动子进程：
-  - FT300S: `conda run -n Modbus314 python -m FT300S.app --uds-path /tmp/ft300_sensor.sock --shm-name ft300_sensor_frame --fps 100`
+  - FT300S: `conda run -n modbus314 python -m FT300S.app --uds-path /tmp/ft300_sensor.sock --shm-name ft300_sensor_frame --fps 100`
   - XenseTacSensor: `conda run -n Xense310 python -m XenseTacSensor.app --uds-path /tmp/xense_sensor.sock --shm-name xense_sensor_frame --fps 30`
   - RealSense: `conda deactivate` 后直接执行 `ros2 launch`，不重复 `source`。
 - UDS 控制：
