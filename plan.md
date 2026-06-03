@@ -22,7 +22,7 @@
   - demo 间保持读取，并维护环形缓冲或直接丢弃非 demo 数据。
 - 启动子进程：
   - FT300S: `conda run -n modbus314 python -m FT300S.app --uds-path /tmp/ft300_sensor.sock --shm-name ft300_sensor_frame --fps 100`
-  - XenseTacSensor: `conda run -n Xense310 python -m XenseTacSensor.app --uds-path /tmp/xense_sensor.sock --shm-name xense_sensor_frame --fps 30`
+  - XenseTacSensor: 由 `--xense-sdk-version {1.x,2.0}` 选择 SDK 版本，默认 `2.0`；主控内部映射为 `1.x -> Xense310`、`2.0 -> xense2`，并用对应 conda env 启动 `python -m XenseTacSensor.app --uds-path /tmp/xense_sensor.sock --shm-name xense_sensor_frame --fps 30`
   - RealSense: `conda deactivate` 后直接执行 `ros2 launch`，不重复 `source`。
 - UDS 控制：
   - 主控启动后自动连接 FT300S/XenseTacSensor UDS，并自动完成 `INIT_REQ`/`INIT_READY` 握手。
@@ -45,7 +45,7 @@
   - `realsense_metadata.npz`
   - `zmq_telemetry.npz`
 - 使用 `.npz` 的理由：高频数据结构规则、数值密集，后处理对齐会直接进入 numpy；比 JSONL 更小、更快。默认不压缩，避免 demo 完成时 CPU 压缩阻塞。
-- `manifest.json` 记录 demo 起止时间、bag URI/segment、传感器 `.npy` 文件、主控 `.npz` 文件、帧数、告警计数、RealSense 重启次数和完成/放弃状态。采集 `status` 只表示 `done` / `discarded` / `failed` 采集事务；自动对齐结果写入独立 `manifest.alignment` 字段。
+- `manifest.json` 记录 demo 起止时间、`run_id` 后的 `xense_sdk_version`、bag URI/segment、传感器 `.npy` 文件、主控 `.npz` 文件、帧数、告警计数、RealSense 重启次数和完成/放弃状态。采集 `status` 只表示 `done` / `discarded` / `failed` 采集事务；自动对齐结果写入独立 `manifest.alignment` 字段。
 
 ## State Machine
 

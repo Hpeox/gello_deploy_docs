@@ -14,7 +14,7 @@
 
 - 包入口：`setup.py` 已新增 `main_controller = main_controller.main:main`。
 - 依赖声明：`package.xml` 已补充 `rosbag2_interfaces`、`rosidl_runtime_py`、`sensor_msgs`、`realsense2_camera_msgs`、`python3-zmq`、`python3-numpy`。
-- `config.py`：集中定义默认路径、ZMQ endpoint、UDS socket、频率阈值、RealSense metadata topic、required image topic、formal/debug_degraded capture mode、rosbag count-skew threshold 和 fatal error pattern。
+- `config.py`：集中定义默认路径、ZMQ endpoint、UDS socket、频率阈值、Xense SDK 版本到 conda env 的映射、RealSense metadata topic、required image topic、formal/debug_degraded capture mode、rosbag count-skew threshold 和 fatal error pattern。
 - `main.py`：实现 CLI、命令队列、主状态机、demo start/pause/done/discard/stop 流程，以及 RealSense fatal error 自动暂停和重启路径。
 - `uds_client.py`：实现 FT300S/XenseTacSensor 共用 UDS client，包含协议 pack/unpack、自动连接、后台接收、`INIT_READY` 等待、ACK 等待、断连唤醒 pending ACK waiter 和可配置 flush timeout。
 - `zmq_telemetry.py`：在 MainController 内独立实现 ZMQ 504-byte telemetry frame 解包和 always-on receiver，不 import `Zmq_Ref`。
@@ -28,7 +28,7 @@
 ### 已实现业务语义
 
 - ZMQ receiver 从启动后持续 drain socket；demo 外数据不写入 demo buffer，但不会停读，包括 `d/x` 后回到 `WAIT_START` 的 demo 间隔。
-- 主控启动时等待 ZMQ 首个合法 frame、等待 FT300S/XenseTacSensor UDS 连接和 `INIT_READY`。
+- 主控启动时等待 ZMQ 首个合法 frame、等待 FT300S/XenseTacSensor UDS 连接和 `INIT_READY`。XenseTacSensor 通过 `--xense-sdk-version {1.x,2.0}` 选择 SDK 版本，默认 `2.0`；主控内部映射为 `1.x -> Xense310`、`2.0 -> xense2` 的 conda 环境。
 - `s`：创建或恢复 demo，发送两个传感器 `START_REQ`，先验证 required RealSense image topics readiness，首次 segment 调用 rosbag2 `record`，随后调用 `resume`。
 - `p`：发送两个传感器 `PAUSE_REQ`，调用 rosbag2 `pause`，不再用 `stop` 暂停；若任一 required sensor pause 失败，写 `failed` manifest、记录 per-sensor command result，并进入 `ERROR -> STOPPING -> STOPPED`。
 - `d`：进入 `FINALIZING`，并发启动 FT300S `DEMO_DONE_REQ`、Xense `DEMO_DONE_REQ` 和 rosbag `stop`；默认在有限 `sensor_flush_timeout_s` 内等待 sensor ACK 和 `saved_file`，期间周期性写进度日志；显式配置 `none` / `unbounded` 时允许无界等待 sensor ACK，这是操作者为超长 sensor flush 保留数据而接受的预期模式。随后使用实际 rosbag URI 做 required image topic metadata post-check，并保存 `.npz`/manifest。只有 required sensors finished、rosbag stop 成功且 required post-check 通过时 status 才为 `done`；sensor finish、有限 flush timeout、UDS disconnect、rosbag stop 或 post-check 失败时 status 为 `failed`，并记录 command result 或 post-check result。
@@ -253,6 +253,7 @@ demo 之外的数据进入环形缓冲或直接丢弃，但不能停止读。dem
   - `zmq_telemetry.npz`
 - `manifest.json`：
   - demo 起止时间。
+  - `run_id` 后记录 `xense_sdk_version`，取自 MainController 的 `--xense-sdk-version` 参数。
   - rosbag URI/segment。
   - FT300S/XenseTacSensor `saved_file`。
   - 各 `.npz` 路径和 `frame_counts`。discarded /部分 failed manifest 可以不保存高频 `.npz`，但仍记录 buffer 清空前的 frame count summary。
