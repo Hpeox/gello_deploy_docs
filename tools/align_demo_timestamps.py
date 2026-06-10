@@ -24,12 +24,14 @@ Arguments:
         Optional repository root used by callers for stable path context.
         Defaults to the parent directory of this tools/ directory.
     --alignment-base-source {realsense,xense}
-        Base-source policy used when --base is auto. The realsense default picks
-        a required RealSense color image topic when available. The xense option
-        uses Xense sensor 1, i.e. timestamp_ns_1.
+        Base-source policy used when --base is auto. The realsense default keeps
+        the historical behavior and picks a required RealSense color image topic
+        when available. The xense option uses the same-row Xense pair timeline,
+        i.e. max(timestamp_ns_0, timestamp_ns_1).
     --base VALUE
         Explicit target timeline override. Supported values include auto,
-        realsense:<topic>, xense:1, robot, and grid.
+        realsense:<topic>, realsense:bundle, xense:pair, xense:0, xense:1,
+        robot, and grid.
     --mode {causal,nearest}
         Matching policy. causal uses the latest stream sample at or before each
         target time. nearest uses the nearest stream sample within tolerance.
@@ -52,6 +54,7 @@ and alignment_report.md, then prints a JSON summary to stdout.
 from __future__ import annotations
 
 import argparse
+from itertools import product
 import json
 import math
 import os
@@ -67,6 +70,9 @@ NSEC_PER_SEC = 1_000_000_000
 ZMQ_CLOCK_OFFSET_WARN_MS = 100.0
 ZMQ_CLOCK_OFFSET_CHECK_HINT = 'check chrony/NTP sync: run `chronyc sources -v`; expected first line: ^*192.168.10.1'
 REPO_ROOT = Path(__file__).resolve().parents[1]
+REALSENSE_BUNDLE_INITIAL_SEARCH_RADIUS = 2
+REALSENSE_BUNDLE_FALLBACK_SEARCH_RADIUS = 1
+REALSENSE_BUNDLE_SPAN_WARN_NS = 20_000_000
 
 
 @dataclass(frozen=True)
@@ -92,12 +98,15 @@ class Stream:
     tolerance_nearest_ns: int
     frame_number: np.ndarray | None = None
     topic: str | None = None
+    recorded_time_ns: np.ndarray | None = None
+    timestamp_source: str = 'npz'
 
     def sorted_valid(self) -> 'Stream':
         valid = self.time_ns > 0
         order = np.argsort(self.time_ns[valid], kind='stable')
         indices = np.nonzero(valid)[0][order]
         frame_number = None if self.frame_number is None else self.frame_number[indices]
+        recorded_time_ns = None if self.recorded_time_ns is None else self.recorded_time_ns[indices]
         return Stream(
             self.name,
             self.display_name,
@@ -107,7 +116,24 @@ class Stream:
             self.tolerance_nearest_ns,
             frame_number,
             self.topic,
+            recorded_time_ns,
+            self.timestamp_source,
         )
+
+
+@dataclass
+class RosbagImageStream:
+    header_time_ns: np.ndarray
+    recorded_time_ns: np.ndarray
+
+
+@dataclass
+class TargetTimeline:
+    t_ns: np.ndarray
+    kind: str
+    direct_matches: dict[str, dict[str, np.ndarray]] = field(default_factory=dict)
+    arrays: dict[str, np.ndarray] = field(default_factory=dict)
+    base_details: dict[str, Any] = field(default_factory=dict)
 
 
 def align_demo(demo_dir: Path, options: Options) -> dict[str, Any]:
@@ -126,10 +152,8 @@ def align_demo(demo_dir: Path, options: Options) -> dict[str, Any]:
         raise RuntimeError('no timestamp streams found')
 
     base = resolve_base(options, manifest, streams)
-    base_stream = base_stream_for(base, streams)
-    if base_stream is None:
-        raise RuntimeError(f'base stream has no data: {base}')
-    t_ns = target_times(base_stream, streams, options)
+    timeline = build_target_timeline(base, streams, demo_dir, manifest, npz_paths, options, warnings)
+    t_ns = timeline.t_ns
     if len(t_ns) == 0:
         raise RuntimeError('target timeline is empty after trims')
 
@@ -137,10 +161,13 @@ def align_demo(demo_dir: Path, options: Options) -> dict[str, Any]:
         't_ns': t_ns,
         'segment_id': np.zeros(len(t_ns), dtype=np.int64),
     }
+    arrays.update(timeline.arrays)
     stats: dict[str, dict[str, Any]] = {}
     valid_masks: list[np.ndarray] = []
     for stream in streams.values():
-        match = match_stream(t_ns, stream, options.mode)
+        match = timeline.direct_matches.get(stream.name)
+        if match is None:
+            match = match_stream(t_ns, stream, options.mode)
         arrays[f'{stream.name}_index'] = match['index']
         arrays[f'{stream.name}_time_ns'] = match['time_ns']
         arrays[f'{stream.name}_delta_ns'] = match['delta_ns']
@@ -152,6 +179,11 @@ def align_demo(demo_dir: Path, options: Options) -> dict[str, Any]:
             arrays[f'{stream.name}_frame_number'] = frame_number
         if stream.topic is not None:
             arrays[f'{stream.name}_topic'] = np.asarray([stream.topic] * len(t_ns))
+        if stream.recorded_time_ns is not None:
+            recorded_time = np.full(len(t_ns), -1, dtype=np.int64)
+            good = match['position'] >= 0
+            recorded_time[good] = stream.recorded_time_ns[match['position'][good]]
+            arrays[f'{stream.name}_recorded_time_ns'] = recorded_time
         valid_masks.append(match['valid'])
         stats[stream.name] = stream_stats(stream, match)
 
@@ -167,12 +199,14 @@ def align_demo(demo_dir: Path, options: Options) -> dict[str, Any]:
         'base': base,
         'requested_base': options.base,
         'alignment_base_source': options.alignment_base_source,
+        'resolved_base_kind': timeline.kind,
         'mode': options.mode,
         'hz': options.hz,
         'start_trim_s': options.start_trim_s,
         'stream_start_trim': options.stream_start_trim,
         'sources': sources,
         'streams': {name: {'display_name': stream.display_name, 'topic': stream.topic} for name, stream in streams.items()},
+        'base_details': timeline.base_details,
     }
     config_path = output_dir / 'alignment_config.json'
     write_json(config_path, config)
@@ -183,10 +217,12 @@ def align_demo(demo_dir: Path, options: Options) -> dict[str, Any]:
         'sample_count': int(len(t_ns)),
         'valid_count': int(sample_valid.sum()),
         'base': base,
+        'resolved_base_kind': timeline.kind,
         'mode': options.mode,
         'hz': options.hz,
         'sources': sources,
         'streams': stats,
+        'base_details': timeline.base_details,
         'zmq_clock_offsets': zmq_clock_offsets,
         'clock_domain': clock_domain_summary(npz_paths.get('realsense'), warnings),
         'drop_monitors': manifest.get('drop_monitors', {}),
@@ -204,6 +240,7 @@ def align_demo(demo_dir: Path, options: Options) -> dict[str, Any]:
         'sample_count': int(len(t_ns)),
         'valid_count': int(sample_valid.sum()),
         'base': base,
+        'resolved_base_kind': timeline.kind,
         'zmq_clock_offsets': zmq_clock_offsets,
         'warnings': warnings,
     }
@@ -279,20 +316,54 @@ def realsense_streams(demo_dir: Path, manifest: dict[str, Any], npz_path: Path |
     streams: dict[str, Stream] = {}
     for image_topic in required_topics:
         name = realsense_stream_name(image_topic)
-        if image_topic in rosbag and len(rosbag[image_topic]) > 0:
-            streams[name] = Stream(name, f'RealSense {image_topic}', rosbag[image_topic], np.arange(len(rosbag[image_topic]), dtype=np.int64), 66_700_000, 33_400_000, topic=image_topic).sorted_valid()
+        if image_topic in rosbag and len(rosbag[image_topic].header_time_ns) > 0:
+            image_stream = rosbag[image_topic]
+            streams[name] = Stream(
+                name,
+                f'RealSense {image_topic}',
+                image_stream.header_time_ns,
+                np.arange(len(image_stream.header_time_ns), dtype=np.int64),
+                66_700_000,
+                33_400_000,
+                topic=image_topic,
+                recorded_time_ns=image_stream.recorded_time_ns,
+                timestamp_source='rosbag_image',
+            ).sorted_valid()
             continue
         meta = metadata_by_topic.get(image_topic_to_metadata_topic(image_topic))
         if meta is not None:
-            streams[name] = Stream(name, f'RealSense {image_topic}', meta['time_ns'], meta['source_index'], 66_700_000, 33_400_000, meta['frame_number'], image_topic).sorted_valid()
+            warnings.append(f'RealSense {image_topic} using metadata fallback; recorded timestamps unavailable')
+            streams[name] = Stream(
+                name,
+                f'RealSense {image_topic}',
+                meta['time_ns'],
+                meta['source_index'],
+                66_700_000,
+                33_400_000,
+                meta['frame_number'],
+                image_topic,
+                np.full(len(meta['time_ns']), -1, dtype=np.int64),
+                'metadata_header',
+            ).sorted_valid()
     if not streams:
         for topic, meta in metadata_by_topic.items():
             name = realsense_stream_name(topic)
-            streams[name] = Stream(name, f'RealSense {topic}', meta['time_ns'], meta['source_index'], 66_700_000, 33_400_000, meta['frame_number'], topic).sorted_valid()
+            streams[name] = Stream(
+                name,
+                f'RealSense {topic}',
+                meta['time_ns'],
+                meta['source_index'],
+                66_700_000,
+                33_400_000,
+                meta['frame_number'],
+                topic,
+                np.full(len(meta['time_ns']), -1, dtype=np.int64),
+                'metadata_header',
+            ).sorted_valid()
     return streams
 
 
-def read_rosbag_image_streams(rosbag_uri: Path | None, topics: list[str], warnings: list[str]) -> dict[str, np.ndarray]:
+def read_rosbag_image_streams(rosbag_uri: Path | None, topics: list[str], warnings: list[str]) -> dict[str, RosbagImageStream]:
     if rosbag_uri is None or not rosbag_uri.exists() or not topics:
         return {}
     try:
@@ -309,24 +380,296 @@ def read_rosbag_image_streams(rosbag_uri: Path | None, topics: list[str], warnin
         selected = [topic for topic in topics if topic in topic_types]
         reader.set_filter(rosbag2_py.StorageFilter(topics=selected))
         classes = {topic: get_message(topic_types[topic]) for topic in selected}
-        result: dict[str, list[int]] = {topic: [] for topic in selected}
+        header_times: dict[str, list[int]] = {topic: [] for topic in selected}
+        recorded_times: dict[str, list[int]] = {topic: [] for topic in selected}
         while reader.has_next():
             topic, serialized, _recorded = reader.read_next()
-            result[topic].append(stamp_to_ns(deserialize_message(serialized, classes[topic]).header.stamp))
-        return {topic: np.asarray(times, dtype=np.int64) for topic, times in result.items()}
+            header_times[topic].append(stamp_to_ns(deserialize_message(serialized, classes[topic]).header.stamp))
+            recorded_times[topic].append(int(_recorded))
+        return {
+            topic: RosbagImageStream(
+                np.asarray(header_times[topic], dtype=np.int64),
+                np.asarray(recorded_times[topic], dtype=np.int64),
+            )
+            for topic in selected
+        }
     except Exception as exc:
         warnings.append(f'rosbag image header read failed, using metadata fallback: {exc}')
         return {}
 
 
-def target_times(base_stream: Stream, streams: dict[str, Stream], options: Options) -> np.ndarray:
+def build_target_timeline(
+    base: str,
+    streams: dict[str, Stream],
+    demo_dir: Path,
+    manifest: dict[str, Any],
+    npz_paths: dict[str, Path],
+    options: Options,
+    warnings: list[str],
+) -> TargetTimeline:
+    if base == 'xense:pair':
+        return build_xense_pair_timeline(streams, npz_paths, options)
+    if base == 'realsense:bundle':
+        return build_realsense_bundle_timeline(streams, manifest, options, warnings)
+    base_stream = base_stream_for(base, streams)
+    if base_stream is None:
+        raise RuntimeError(f'base stream has no data: {base}')
+    return TargetTimeline(
+        target_times(base, base_stream, streams, options),
+        resolved_base_kind(base),
+        base_details={'kind': resolved_base_kind(base)},
+    )
+
+
+def build_xense_pair_timeline(
+    streams: dict[str, Stream],
+    npz_paths: dict[str, Path],
+    options: Options,
+) -> TargetTimeline:
+    if 'xense' not in npz_paths:
+        raise RuntimeError('xense:pair base requires xense timestamp npz')
+    if 'xense_0' not in streams or 'xense_1' not in streams:
+        raise RuntimeError('xense:pair base requires xense_0 and xense_1 streams')
+    data = np.load(npz_paths['xense'], allow_pickle=True)
+    ts0 = int_array(data['timestamp_ns_0'])
+    ts1 = int_array(data['timestamp_ns_1'])
+    if len(ts0) != len(ts1):
+        raise RuntimeError(f'xense:pair requires equal timestamp array lengths, got {len(ts0)} and {len(ts1)}')
+    valid_pair = (ts0 > 0) & (ts1 > 0)
+    if not bool(valid_pair.all()):
+        raise RuntimeError(f'xense:pair requires both sensor timestamps on every row; invalid rows: {int((~valid_pair).sum())}')
+    source_index = np.arange(len(ts0), dtype=np.int64)
+    pair_time = np.maximum(ts0, ts1).astype(np.int64, copy=False)
+    order = np.argsort(pair_time, kind='stable')
+    pair_time = pair_time[order]
+    source_index = source_index[order]
+    ts0 = ts0[order]
+    ts1 = ts1[order]
+
+    overlap_start, overlap_end = stream_overlap_bounds(streams, options)
+    start_ns = max(pair_time[0], overlap_start) + int(round(options.start_trim_s * NSEC_PER_SEC))
+    end_ns = min(pair_time[-1], overlap_end)
+    keep = (pair_time >= start_ns) & (pair_time <= end_ns)
+    pair_time = pair_time[keep]
+    source_index = source_index[keep]
+    ts0 = ts0[keep]
+    ts1 = ts1[keep]
+    if len(pair_time) == 0:
+        return TargetTimeline(np.asarray([], dtype=np.int64), 'xense_pair')
+
+    direct_matches = {
+        'xense_0': direct_match_from_source_index(streams['xense_0'], source_index, pair_time, ts0),
+        'xense_1': direct_match_from_source_index(streams['xense_1'], source_index, pair_time, ts1),
+    }
+    arrays = {
+        'xense_pair_time_ns': pair_time,
+        'xense_pair_source_index': source_index,
+    }
+    details = {
+        'kind': 'xense_pair',
+        'pair_count': int(len(pair_time)),
+        'source_index_start': int(source_index[0]),
+        'source_index_end': int(source_index[-1]),
+    }
+    return TargetTimeline(pair_time, 'xense_pair', direct_matches, arrays, details)
+
+
+def direct_match_from_source_index(
+    stream: Stream,
+    source_index: np.ndarray,
+    target_time_ns: np.ndarray,
+    source_time_ns: np.ndarray,
+) -> dict[str, np.ndarray]:
+    source_to_position = {int(value): pos for pos, value in enumerate(stream.source_index)}
+    position = np.asarray([source_to_position.get(int(value), -1) for value in source_index], dtype=np.int64)
+    valid = position >= 0
+    index = np.full(len(target_time_ns), -1, dtype=np.int64)
+    time_ns = np.full(len(target_time_ns), -1, dtype=np.int64)
+    index[valid] = source_index[valid]
+    time_ns[valid] = source_time_ns[valid]
+    return {
+        'index': index,
+        'position': position,
+        'time_ns': time_ns,
+        'delta_ns': time_ns - target_time_ns,
+        'valid': valid,
+    }
+
+
+def build_realsense_bundle_timeline(
+    streams: dict[str, Stream],
+    manifest: dict[str, Any],
+    options: Options,
+    warnings: list[str],
+) -> TargetTimeline:
+    required_topics = required_image_topics(manifest)
+    if not required_topics:
+        raise RuntimeError('realsense:bundle requires manifest required image topics')
+    missing_topics = []
+    non_image_sources = []
+    for topic in required_topics:
+        stream = streams.get(realsense_stream_name(topic))
+        if stream is None:
+            missing_topics.append(topic)
+        elif stream.timestamp_source != 'rosbag_image':
+            non_image_sources.append(topic)
+    if missing_topics:
+        raise RuntimeError(f'realsense:bundle requires readable rosbag image topics; missing: {missing_topics}')
+    if non_image_sources:
+        raise RuntimeError(f'realsense:bundle requires image-topic header timestamps for every required topic; not rosbag image: {non_image_sources}')
+
+    camera_topics = group_realsense_topics_by_camera(required_topics)
+    representative_topics: dict[str, str] = {}
+    representative_streams: dict[str, Stream] = {}
+    for camera, topics in camera_topics.items():
+        color_topics = [topic for topic in topics if '/color/image_raw' in topic]
+        if not color_topics:
+            raise RuntimeError(f'realsense:bundle requires a color image topic for camera {camera!r}')
+        topic = sorted(color_topics)[0]
+        representative_topics[camera] = topic
+        representative_streams[camera] = streams[realsense_stream_name(topic)]
+
+    overlap_start, overlap_end = stream_overlap_bounds(streams, options)
+    start_ns = max(max(stream.time_ns[0] for stream in representative_streams.values()), overlap_start)
+    start_ns += int(round(options.start_trim_s * NSEC_PER_SEC))
+    end_ns = min(min(stream.time_ns[-1] for stream in representative_streams.values()), overlap_end)
+    if end_ns < start_ns:
+        return TargetTimeline(np.asarray([], dtype=np.int64), 'realsense_bundle')
+
+    cameras = sorted(representative_streams)
+    initial = choose_initial_bundle(cameras, representative_streams, start_ns)
+    if initial is None:
+        return TargetTimeline(np.asarray([], dtype=np.int64), 'realsense_bundle')
+
+    selected_indices: list[dict[str, int]] = []
+    modes: list[str] = []
+    resync: list[bool] = []
+    reused: list[bool] = []
+    current = initial
+    current_mode = 'initial_search'
+    current_resync = False
+    current_reused = False
+    last_t = -1
+    while True:
+        bundle_time = max(int(representative_streams[camera].time_ns[current[camera]]) for camera in cameras)
+        if bundle_time > end_ns:
+            break
+        if bundle_time > last_t:
+            selected_indices.append(dict(current))
+            modes.append(current_mode)
+            resync.append(current_resync)
+            reused.append(current_reused)
+            last_t = bundle_time
+        expected = {camera: current[camera] + 1 for camera in cameras}
+        if any(expected[camera] >= len(representative_streams[camera].time_ns) for camera in cameras):
+            break
+        locked_span = bundle_span_ns(cameras, representative_streams, expected)
+        if locked_span <= REALSENSE_BUNDLE_SPAN_WARN_NS:
+            current = expected
+            current_mode = 'locked_plus_one'
+            current_resync = False
+            current_reused = False
+            continue
+        fallback = choose_local_bundle(cameras, representative_streams, expected, last_t, end_ns)
+        if fallback is None:
+            current = expected
+            current_mode = 'degraded_best_effort'
+            current_resync = False
+            current_reused = False
+            if max(int(representative_streams[camera].time_ns[current[camera]]) for camera in cameras) <= last_t:
+                break
+            continue
+        current = fallback
+        current_mode = 'fallback_search'
+        current_resync = True
+        current_reused = any(current[camera] <= selected_indices[-1][camera] for camera in cameras)
+
+    if not selected_indices:
+        return TargetTimeline(np.asarray([], dtype=np.int64), 'realsense_bundle')
+
+    bundle_time_ns = np.asarray(
+        [max(int(representative_streams[camera].time_ns[indices[camera]]) for camera in cameras) for indices in selected_indices],
+        dtype=np.int64,
+    )
+    bundle_span = np.asarray(
+        [bundle_span_ns(cameras, representative_streams, indices) for indices in selected_indices],
+        dtype=np.int64,
+    )
+    degraded = bundle_span > REALSENSE_BUNDLE_SPAN_WARN_NS
+    quality = np.asarray(['degraded_span' if value else 'ok' for value in degraded], dtype='<U32')
+    mode_array = np.asarray(modes, dtype='<U32')
+    resync_array = np.asarray(resync, dtype=bool)
+    reused_array = np.asarray(reused, dtype=bool)
+
+    arrays: dict[str, np.ndarray] = {
+        'realsense_bundle_time_ns': bundle_time_ns,
+        'realsense_bundle_span_ns': bundle_span,
+        'realsense_bundle_mode': mode_array,
+        'realsense_bundle_quality': quality,
+        'realsense_bundle_resync': resync_array,
+        'realsense_bundle_degraded': degraded,
+        'realsense_bundle_reused': reused_array,
+    }
+    direct_matches: dict[str, dict[str, np.ndarray]] = {}
+    selected_recorded_times: list[np.ndarray] = []
+    for camera in cameras:
+        rep_stream = representative_streams[camera]
+        rep_positions = np.asarray([indices[camera] for indices in selected_indices], dtype=np.int64)
+        arrays[f'realsense_bundle_{safe_key(camera)}_index'] = rep_stream.source_index[rep_positions]
+        arrays[f'realsense_bundle_{safe_key(camera)}_time_ns'] = rep_stream.time_ns[rep_positions]
+        arrays[f'realsense_bundle_{safe_key(camera)}_recorded_time_ns'] = rep_stream.recorded_time_ns[rep_positions]
+        rep_times = rep_stream.time_ns[rep_positions]
+        for topic in camera_topics[camera]:
+            stream = streams[realsense_stream_name(topic)]
+            positions = nearest_positions_for_times(stream.time_ns, rep_times)
+            deltas = np.abs(stream.time_ns[positions] - rep_times)
+            mismatch_count = int(np.count_nonzero(deltas))
+            if mismatch_count:
+                warnings.append(
+                    f'RealSense bundle camera {camera} topic {topic} has {mismatch_count} frame(s) '
+                    'whose selected header stamp differs from the representative color stamp'
+                )
+            valid = positions >= 0
+            direct_matches[stream.name] = {
+                'index': stream.source_index[positions],
+                'position': positions,
+                'time_ns': stream.time_ns[positions],
+                'delta_ns': stream.time_ns[positions] - bundle_time_ns,
+                'valid': valid,
+            }
+            selected_recorded_times.append(stream.recorded_time_ns[positions])
+
+    recorded_stack = np.vstack(selected_recorded_times)
+    recorded_time_ns = recorded_stack.max(axis=0).astype(np.int64, copy=False)
+    recorded_span_ns = (recorded_stack.max(axis=0) - recorded_stack.min(axis=0)).astype(np.int64, copy=False)
+    arrays['realsense_bundle_recorded_time_ns'] = recorded_time_ns
+    arrays['realsense_bundle_recorded_span_ns'] = recorded_span_ns
+
+    details = {
+        'kind': 'realsense_bundle',
+        'required_topics': required_topics,
+        'representative_topics': representative_topics,
+        'bundle_count': int(len(bundle_time_ns)),
+        'span_ns': numeric_summary(bundle_span),
+        'recorded_span_ns': numeric_summary(recorded_span_ns),
+        'mode_counts': value_counts(mode_array),
+        'quality_counts': value_counts(quality),
+        'resync_count': int(resync_array.sum()),
+        'degraded_count': int(degraded.sum()),
+        'reused_count': int(reused_array.sum()),
+        'span_warn_ns': REALSENSE_BUNDLE_SPAN_WARN_NS,
+    }
+    return TargetTimeline(bundle_time_ns, 'realsense_bundle', direct_matches, arrays, details)
+
+
+def target_times(base: str, base_stream: Stream, streams: dict[str, Stream], options: Options) -> np.ndarray:
     overlap_start = max(stream.time_ns[0] + int(round(options.stream_start_trim.get(stream.name, 0.0) * NSEC_PER_SEC)) for stream in streams.values())
     overlap_end = min(stream.time_ns[-1] for stream in streams.values())
     start_ns = max(base_stream.time_ns[0], overlap_start) + int(round(options.start_trim_s * NSEC_PER_SEC))
     end_ns = min(base_stream.time_ns[-1], overlap_end)
     if end_ns < start_ns:
         return np.asarray([], dtype=np.int64)
-    if options.base == 'grid':
+    if base == 'grid':
         return np.arange(start_ns, end_ns + 1, int(round(NSEC_PER_SEC / options.hz)), dtype=np.int64)
     return base_stream.time_ns[(base_stream.time_ns >= start_ns) & (base_stream.time_ns <= end_ns)]
 
@@ -356,11 +699,136 @@ def match_stream(t_ns: np.ndarray, stream: Stream, mode: str) -> dict[str, np.nd
     return {'index': index, 'position': position, 'time_ns': matched_time, 'delta_ns': delta_ns, 'valid': valid}
 
 
+def stream_overlap_bounds(streams: dict[str, Stream], options: Options) -> tuple[int, int]:
+    overlap_start = max(
+        stream.time_ns[0] + int(round(options.stream_start_trim.get(stream.name, 0.0) * NSEC_PER_SEC))
+        for stream in streams.values()
+    )
+    overlap_end = min(stream.time_ns[-1] for stream in streams.values())
+    return int(overlap_start), int(overlap_end)
+
+
+def group_realsense_topics_by_camera(topics: list[str]) -> dict[str, list[str]]:
+    result: dict[str, list[str]] = {}
+    for topic in topics:
+        parts = [part for part in topic.split('/') if part]
+        camera = parts[0] if parts else 'camera'
+        result.setdefault(camera, []).append(topic)
+    return result
+
+
+def choose_initial_bundle(
+    cameras: list[str],
+    streams: dict[str, Stream],
+    start_ns: int,
+) -> dict[str, int] | None:
+    candidate_lists: list[list[int]] = []
+    for camera in cameras:
+        times = streams[camera].time_ns
+        center = int(np.searchsorted(times, start_ns, side='left'))
+        candidates = bounded_index_window(len(times), center, REALSENSE_BUNDLE_INITIAL_SEARCH_RADIUS)
+        candidate_lists.append(candidates)
+    return choose_best_bundle(cameras, streams, candidate_lists, min_time_ns=start_ns, max_time_ns=None)
+
+
+def choose_local_bundle(
+    cameras: list[str],
+    streams: dict[str, Stream],
+    expected: dict[str, int],
+    last_time_ns: int,
+    end_ns: int,
+) -> dict[str, int] | None:
+    candidate_lists = [
+        bounded_index_window(len(streams[camera].time_ns), expected[camera], REALSENSE_BUNDLE_FALLBACK_SEARCH_RADIUS)
+        for camera in cameras
+    ]
+    return choose_best_bundle(cameras, streams, candidate_lists, min_time_ns=last_time_ns + 1, max_time_ns=end_ns)
+
+
+def choose_best_bundle(
+    cameras: list[str],
+    streams: dict[str, Stream],
+    candidate_lists: list[list[int]],
+    min_time_ns: int,
+    max_time_ns: int | None,
+) -> dict[str, int] | None:
+    best: tuple[int, int, dict[str, int]] | None = None
+    for combo in product(*candidate_lists):
+        indices = dict(zip(cameras, combo))
+        times = [int(streams[camera].time_ns[indices[camera]]) for camera in cameras]
+        bundle_time = max(times)
+        if bundle_time < min_time_ns:
+            continue
+        if max_time_ns is not None and bundle_time > max_time_ns:
+            continue
+        span = max(times) - min(times)
+        score = (span, bundle_time)
+        if best is None or score < (best[0], best[1]):
+            best = (span, bundle_time, indices)
+    return None if best is None else best[2]
+
+
+def bounded_index_window(length: int, center: int, radius: int) -> list[int]:
+    start = max(0, center - radius)
+    stop = min(length - 1, center + radius)
+    if stop < start:
+        return []
+    return list(range(start, stop + 1))
+
+
+def bundle_span_ns(cameras: list[str], streams: dict[str, Stream], indices: dict[str, int]) -> int:
+    times = [int(streams[camera].time_ns[indices[camera]]) for camera in cameras]
+    return max(times) - min(times)
+
+
+def nearest_positions_for_times(stream_time_ns: np.ndarray, target_time_ns: np.ndarray) -> np.ndarray:
+    right = np.searchsorted(stream_time_ns, target_time_ns, side='left')
+    left = np.maximum(right - 1, 0)
+    right = np.minimum(right, len(stream_time_ns) - 1)
+    return np.where(np.abs(stream_time_ns[right] - target_time_ns) < np.abs(stream_time_ns[left] - target_time_ns), right, left).astype(np.int64)
+
+
+def numeric_summary(values: np.ndarray) -> dict[str, Any]:
+    if len(values) == 0:
+        return {'count': 0, 'min': None, 'median': None, 'p95': None, 'max': None}
+    return {
+        'count': int(len(values)),
+        'min': int(np.min(values)),
+        'median': float(np.median(values)),
+        'p95': float(np.percentile(values, 95)),
+        'max': int(np.max(values)),
+    }
+
+
+def value_counts(values: np.ndarray) -> dict[str, int]:
+    result: dict[str, int] = {}
+    for value in values:
+        key = str(value)
+        result[key] = result.get(key, 0) + 1
+    return result
+
+
+def resolved_base_kind(base: str) -> str:
+    if base == 'grid':
+        return 'grid'
+    if base == 'robot':
+        return 'robot'
+    if base == 'xense:pair':
+        return 'xense_pair'
+    if base.startswith('xense:'):
+        return 'xense_single'
+    if base == 'realsense:bundle':
+        return 'realsense_bundle'
+    if base.startswith('realsense:'):
+        return 'realsense_single'
+    return 'stream'
+
+
 def resolve_base(options: Options, manifest: dict[str, Any], streams: dict[str, Stream]) -> str:
     if options.base != 'auto':
         return options.base
     if options.alignment_base_source == 'xense':
-        return 'xense:1'
+        return 'xense:pair'
     for topic in required_image_topics(manifest):
         if '/color/' in topic and realsense_stream_name(topic) in streams:
             return f'realsense:{topic}'
@@ -379,10 +847,14 @@ def base_stream_for(base: str, streams: dict[str, Stream]) -> Stream | None:
         return streams.get('xense_0')
     if base == 'xense:1':
         return streams.get('xense_1')
+    if base == 'xense:pair':
+        return None
     if base.startswith('realsense:'):
         target = base.split(':', 1)[1]
         if target == 'auto':
             return next((stream for name, stream in streams.items() if name.startswith('realsense_')), None)
+        if target == 'bundle':
+            return None
         return streams.get(realsense_stream_name(target))
     return streams.get(base)
 
@@ -424,6 +896,7 @@ def render_report(manifest: dict[str, Any]) -> str:
         '',
         f"Status: {manifest['status']}",
         f"Base: {manifest['base']}",
+        f"Resolved base kind: {manifest.get('resolved_base_kind', 'stream')}",
         f"Samples: {manifest['valid_count']} / {manifest['sample_count']} valid",
         '',
         '## Streams',
@@ -441,6 +914,33 @@ def render_report(manifest: dict[str, Any]) -> str:
             )
     if manifest.get('clock_domain'):
         lines.extend(['', '## RealSense Clock Domain', json.dumps(manifest['clock_domain'].get('counts', {}), ensure_ascii=True)])
+    base_details = manifest.get('base_details') or {}
+    if base_details.get('kind') == 'realsense_bundle':
+        span = base_details.get('span_ns') or {}
+        recorded_span = base_details.get('recorded_span_ns') or {}
+        lines.extend(
+            [
+                '',
+                '## RealSense Bundle',
+                f"Bundles: {base_details.get('bundle_count', 0)}",
+                (
+                    'Header span ns: '
+                    f"median={span.get('median')}, p95={span.get('p95')}, max={span.get('max')}"
+                ),
+                (
+                    'Recorded span ns: '
+                    f"median={recorded_span.get('median')}, p95={recorded_span.get('p95')}, max={recorded_span.get('max')}"
+                ),
+                f"Modes: {json.dumps(base_details.get('mode_counts', {}), ensure_ascii=True)}",
+                f"Quality: {json.dumps(base_details.get('quality_counts', {}), ensure_ascii=True)}",
+                (
+                    f"Resync/degraded/reused: {base_details.get('resync_count', 0)} / "
+                    f"{base_details.get('degraded_count', 0)} / {base_details.get('reused_count', 0)}"
+                ),
+            ]
+        )
+    elif base_details.get('kind') == 'xense_pair':
+        lines.extend(['', '## Xense Pair Base', f"Pairs: {base_details.get('pair_count', 0)}"])
     if manifest.get('warnings'):
         lines.extend(['', '## Warnings'])
         lines.extend(f"- {warning}" for warning in manifest['warnings'])
@@ -560,7 +1060,11 @@ def main() -> None:
     parser.add_argument('--output-dir', default=None)
     parser.add_argument('--repo-root', default=None)
     parser.add_argument('--alignment-base-source', choices=['realsense', 'xense'], default='realsense')
-    parser.add_argument('--base', default='auto', help='auto, realsense:<topic>, xense:1, robot, or grid')
+    parser.add_argument(
+        '--base',
+        default='auto',
+        help='auto, realsense:<topic>, realsense:bundle, xense:pair, xense:0, xense:1, robot, or grid',
+    )
     parser.add_argument('--mode', choices=['causal', 'nearest'], default='causal')
     parser.add_argument('--hz', type=float, default=30.0)
     parser.add_argument('--start-trim-s', type=float, default=0.0)
@@ -590,4 +1094,6 @@ def main() -> None:
 if __name__ == '__main__':
     main()
 
-# NOTE: MainController timestamp_alignment.py has not been updated for this standalone xense:1 base change.
+# NOTE: This standalone tool now supports realsense:bundle and xense:pair bases.
+# MainController timestamp_alignment.py has not been updated for these standalone
+# RealSense bundle-base and Xense pair/max-base behaviors.
