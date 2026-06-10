@@ -5,3 +5,7 @@
 !/review_report.md
 !/*Report.md
 !/*report.md
+
+!/tools/
+/tools/*
+!/tools/*.py
