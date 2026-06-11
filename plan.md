@@ -244,18 +244,18 @@ unexpected exit 发生在 active demo 时，与 `q` 使用同一 active-demo abo
 
 ## Timestamp Alignment
 
-- MainController 内部需要新增 `main_controller/timestamp_alignment.py`，作为 `d` 收尾流程中的自动对齐模块；该模块只生成对齐配置、索引和报告，不生成 `aligned_numeric.npz` 等实际训练数据文件。
-- `tools/align_demo_timestamps.py` 是相似但独立的命令行对齐工具，不跨目录 import 主控对齐模块；允许从主控版本复制后按 CLI 场景修改。
-- 主控和独立 CLI 均支持 `--alignment-base-source realsense|xense`。默认 `realsense`；选择 `xense` 时等价于 `--base xense:0`，使用 `timestamp_ns_0` 作为目标时间轴。手动 CLI 的 `--base realsense:<topic>|xense:0|robot|grid` 优先级高于 base source。
-- Xense 两个触觉传感器在对齐索引中独立输出为 `xense_0_*` 和 `xense_1_*`；不生成两路固定偏差统计。
+- MainController 内部已使用 `main_controller/timestamp_alignment.py` 作为 `d` 收尾流程中的自动对齐模块；该模块只生成对齐配置、索引和报告，不生成 `aligned_numeric.npz` 等实际训练数据文件。
+- `tools/align_demo_timestamps_v3.py` 是相似但独立的命令行对齐工具，不跨目录 import 主控对齐模块；二者使用同一套 v3 source/bundle/pair 对齐语义。
+- 主控使用显式 `--alignment-base`，默认 `realsense:bundle`；独立 v3 CLI 使用显式 `--base`。支持 `realsense:bundle`、`realsense:<topic>`、`xense:pair`、`robot` 和 `grid`，不再使用 `alignment_base_source` / `base auto` / `xense:0` / `xense:1`。
+- Xense 两个触觉传感器通过 same-row `xense:pair` group 对齐；pair 时间为同一 raw row 的 `max(timestamp_ns_0, timestamp_ns_1)`，有效样本中 `xense_0_*` 和 `xense_1_*` 使用同一个 source index。
 - FT300S 在报告中按型号名显示为 `FT300S`，输出字段使用 `ft300s_*`，其中 `S` 不作为复数理解。
 - materialize 实际数据集只作为未来扩展提及；在确认数据集具体组织格式前，不规划本轮实现 `tools/materialize_aligned_data.py`。
 - 详细设计以 `timestamp_alignment_plan.md` 为准；主计划只保留关键约束。
 - 所有来源的原始时间戳必须分别保存，用于后处理对齐；后处理不得通过平移原始时间戳来掩盖启动阶段不齐。
-- 第一版对齐阶段使用主控保存的 `.npz` 时间戳索引、ZMQ 数据和 RealSense rosbag image header / metadata header；FT300S/XenseTacSensor 的 `saved_file` 路径只写入 alignment source manifest，完整 `.npy` 内容读取和主控索引交叉校验列为后续增强。
+- 当前对齐阶段使用主控保存的 `.npz` 时间戳索引、ZMQ 数据和 RealSense rosbag image header；RealSense bundle 不 fallback 到 metadata header。FT300S/XenseTacSensor 的 `saved_file` 路径只写入 alignment source manifest，完整 `.npy` 内容读取和主控索引交叉校验列为后续增强。
 - 对于 XenseTacSensor 和 FT300S，必须等待 UDS `DEMO_DONE_REQ` ACK，并读取 ACK payload 中的 `saved_file` filename 后，再写 repo-root 相对 `sensor_paths` 并启动自动对齐；`saved_file` 不是任意路径 channel。
-- RealSense 对齐优先使用 rosbag image `header.stamp` 或 metadata `header_stamp_ns`；`frame_timestamp_ns` 必须结合 `clock_domain` 判断，`HARDWARE_CLOCK` 需要按 topic 检查稳定 offset / 漂移，`SYSTEM_TIME` 或 `GLOBAL_TIME` 才期望接近 header time。
-- 对齐工具应提供 `--start-trim-s` 和可重复的 `--stream-start-trim <stream>=<seconds>`，用于裁掉启动暖机段；这些参数只裁剪样本，不修改原始时间戳。
+- RealSense 对齐使用 rosbag image `header.stamp`；`_recorded` timestamp 只作为诊断字段，不参与 source-time selection。`frame_timestamp_ns` 必须结合 `clock_domain` 判断，`HARDWARE_CLOCK` 需要按 topic 检查稳定 offset / 漂移，`SYSTEM_TIME` 或 `GLOBAL_TIME` 才期望接近 header time。
+- 对齐工具提供 `--start-trim-s` 和 `--end-trim-s`，用于裁掉全局 overlap 窗口首尾样本；这些参数只裁剪样本，不修改原始时间戳。
 - 默认只对 `manifest.status == "done"` 的 demo 自动生成对齐索引和报告；`failed` 和 `discarded` manifest 只用于诊断，除非独立 CLI 显式启用 degraded / index-only 模式。
 - 采集 `status` 和 `manifest.alignment.status` 是两个独立状态；对齐失败不得改写采集 `done` / `failed` / `discarded` 语义。
 
@@ -276,7 +276,7 @@ unexpected exit 发生在 active demo 时，与 `q` 使用同一 active-demo abo
   - ZMQ 在 pause/finalizing 时持续发送，验证主控仍持续 drain。
   - mock 环境下重点覆盖正常连续 demo 流程：`s -> d -> s -> d` 和 `s -> x -> s -> d`；验证 `d` 后自动对齐结束前不能进入下一次采集，`d/x` 后 ZMQ 仍持续 drain，且 demo 间数据不污染下一段或上一段 demo buffer。
   - 覆盖自动对齐成功和失败路径：成功时写入 `manifest.alignment.status = "done"`，失败时只写 `manifest.alignment.status = "failed"`，不改写采集 `status`。
-  - 验证 `tools/align_demo_timestamps.py` 可独立重跑对齐，且不跨目录 import `main_controller/timestamp_alignment.py`。
+  - 验证 `tools/align_demo_timestamps_v3.py` 可独立重跑对齐，且不跨目录 import `main_controller/timestamp_alignment.py`。
   - 真实 FT300S/XenseTacSensor 下执行 `s -> p -> s -> d -> q`、`s -> d -> s -> d -> q`、`s -> x -> s -> d -> q`，检查 manifest、传感器 `.npy`、主控 `.npz`、rosbag、告警统计齐全。
 
 ## Assumptions

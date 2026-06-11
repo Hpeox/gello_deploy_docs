@@ -2,7 +2,7 @@
 
 ## 目标和边界
 
-本文对照 `plan.md`、`implement_plan.md` 和当前代码，给出第一版时间戳对齐方案。当前 MainController 已完成原始时间戳采集、实时丢帧监控、`.npz` 索引和 `manifest.json` 保存；后续需要新增主控内部自动对齐模块，并在 `tools/` 下保留相似但独立的命令行对齐工具。
+本文对照 `plan.md`、`implement_plan.md` 和当前代码，给出当前时间戳对齐方案。MainController 已完成原始时间戳采集、实时丢帧监控、`.npz` 索引、`manifest.json` 保存和自动 timestamp alignment；`tools/` 下保留相似但独立的命令行对齐工具。
 
 第一版目标：
 
@@ -10,13 +10,13 @@
 - 读取 `manifest.json`、主控保存的 `.npz`、RealSense rosbag image header；FT300S/XenseTacSensor 自己落盘的 `.npy` 路径记录到 source manifest，第一版不读取其内容。
 - 统一转换为 `int64` Unix epoch nanoseconds。
 - 自动生成对齐配置、对齐索引、对齐 manifest 和人工报告，保留每个来源的原始时间戳、匹配索引、时间差和有效性 mask。
-- `tools/align_demo_timestamps.py` 作为相似但独立的 CLI 对齐工具，不跨目录 import `main_controller.timestamp_alignment`，可用于重跑、调参或诊断。
-- 主控和独立 CLI 均提供 `--alignment-base-source realsense|xense`；默认 `realsense`，选择 `xense` 时固定使用 `timestamp_ns_0` 作为目标时间轴。
+- `tools/align_demo_timestamps_v3.py` 作为相似但独立的 CLI 对齐工具，不跨目录 import `main_controller.timestamp_alignment`，可用于重跑、调参或诊断。
+- 主控使用显式 `--alignment-base`，默认 `realsense:bundle`；独立 v3 CLI 使用显式 `--base`。支持 `realsense:bundle`、`realsense:<topic>`、`xense:pair`、`robot` 和 `grid`。
 
 第一版不做：
 
 - 不在采集过程中插值或阻塞保存。
-- 不强行重采样 RealSense 图像内容到 `.npz`；图像仍通过 rosbag topic、frame index、frame_number 引用。
+- 不强行重采样 RealSense 图像内容到 `.npz`；图像仍通过 rosbag topic metadata 和 source index 引用。`aligned_index.npz` 不输出 per-sample topic array 或 RealSense `frame_number`。
 - 不把不同机器的远端 ZMQ 时间戳当成天然可信；必须做时钟偏移检查或修正。
 - 主控自动对齐不生成 `aligned_numeric.npz` 等实际训练数据文件。
 - materialize 实际数据集暂不实现；TODO：需要确认数据集具体组织格式后，再规划读取已有索引/配置并生成实际数据文件的工具。
@@ -81,9 +81,10 @@
 
 推荐主时间戳：
 
-- 两个触觉传感器独立作为 `xense_0` 和 `xense_1` stream 参与匹配。
-- `xense_0` 使用 `timestamp_ns_0`，`xense_1` 使用 `timestamp_ns_1`。
-- 选择 Xense 作为因果对齐基准时固定使用 `timestamp_ns_0`，即 `--base xense:0`。
+- Xense 始终先构造成 same-row pair group。
+- `xense_pair_time_ns[i] = max(timestamp_ns_0[i], timestamp_ns_1[i])`，只接受两路 timestamp 都有效的 raw row。
+- 选择 Xense 作为目标时间轴时使用 `--alignment-base xense:pair` / `--base xense:pair`。
+- 任意 base 下，`xense_0_*` 和 `xense_1_*` 都从同一个 matched raw source row 投影；有效样本中 `xense_0_index == xense_1_index == xense_pair_source_index`。
 
 ### RealSense
 
@@ -101,11 +102,12 @@
 rosbag：`manifest.rosbag_uri`
 
 - 当前 rosbag launch 记录 image topic，不记录 metadata topic。
-- 第一版优先用 image topic 的 `header.stamp` 作为图像时间戳；rosbag 读取失败或不可用时 fallback 到 metadata `header_stamp_ns`。
+- 当前对齐使用 image topic 的 `header.stamp` 作为图像 source timestamp；RealSense bundle 要求 manifest 中的 required image topics 都能从 rosbag image messages 读取 header stamp，不 fallback 到 metadata `header_stamp_ns`。
+- rosbag message `_recorded` timestamp 会写入 diagnostic fields，例如 `<stream>_recorded_time_ns`、`realsense_bundle_recorded_time_ns` 和 `realsense_bundle_recorded_span_ns`，但不参与 bundle source-time selection。
 
 推荐主时间戳：
 
-- 用于跨源对齐时，默认使用 rosbag image `header.stamp` 或 metadata `header_stamp_ns`。二者应处于同一个 ROS wrapper 时间基准。
+- 用于跨源对齐时，使用 rosbag image `header.stamp`。它应处于 RealSense ROS wrapper 的 header time 基准。
 - `header_stamp_ns` 是 RealSense ROS wrapper 计算出的 ROS header time。同一帧的 image、camera_info 和 metadata 使用同一类 header time。
 - `frame_timestamp_ns` 不是天然等于 `header_stamp_ns`。它的含义由 `clock_domain` 决定：
   - `HARDWARE_CLOCK`：相机硬件时钟。此时 `header_stamp_ns = ros_time_base_ns + (frame_timestamp_ms - camera_time_base_ms) * 1e6`，离线只看 `frame_timestamp` 无法唯一恢复 ROS epoch time。
@@ -141,42 +143,49 @@ rosbag：`manifest.rosbag_uri`
 
 ## 统一时间轴选择
 
-第一版实现应支持 `--alignment-base-source realsense|xense`，并支持手动 `--base` 覆盖：
+当前实现使用显式 base。MainController 参数是 `--alignment-base`，standalone v3 参数是
+`--base`：
 
-1. `--base realsense:<topic>` 或 `--alignment-base-source realsense`
+1. `realsense:bundle`
    - 推荐给视觉模仿学习数据集。
-   - 目标时间轴直接使用指定 RealSense metadata 或 rosbag image 的帧时间戳。
-   - 图像不可插值，因此以相机帧为样本基准最稳。
+   - 目标时间轴使用多相机 visual bundle 的 `realsense_bundle_time_ns`。
+   - 每个 bundle row 先按相机 color representative 选帧；bundle 输出再投影到各 RealSense stream。
 
-2. `--base xense:0` 或 `--alignment-base-source xense`
-   - 使用 Xense `timestamp_ns_0` 作为目标时间轴。
-   - 两路触觉传感器仍分别输出 `xense_0_*` 和 `xense_1_*` 匹配字段。
+2. `realsense:<topic>`
+   - 目标时间轴直接使用指定 RealSense rosbag image topic 的 header timestamp。
+   - 这是唯一让 RealSense image streams 使用 per-stream scalar matching 的 base。
 
-3. `--base robot`
+3. `xense:pair`
+   - 使用同一 raw row 的 `max(timestamp_ns_0, timestamp_ns_1)` 作为目标时间轴。
+   - 两路触觉传感器输出 `xense_0_*` 和 `xense_1_*`，并共享 `xense_pair_source_index`。
+
+4. `robot`
    - 推荐给控制/状态闭环分析。
    - 使用 ZMQ `source=2` robot telemetry 的时间戳作为目标时间轴。
    - 适合 50 Hz 左右的 robot state/action 数据。
 
-4. `--base grid --hz <rate>`
+5. `grid --hz <rate>`
    - 推荐给对齐质量检查或固定频率训练样本。
    - `start_ns = max(first_valid_time of required streams)`
    - `end_ns = min(last_valid_time of required streams)`
    - 生成 `[start_ns, end_ns]` 内的理想等间隔网格。
 
+除 `realsense:<topic>` 外，所有 base 的 RealSense 输出都先构造 bundle source timeline，再把 bundle rows 作为 group 匹配到目标 `t_ns`。
+
 启动暖机裁剪参数：
 
 - `--start-trim-s <seconds>`：默认 `0.0`。对每个 segment，目标时间轴从 `segment_overlap_start_ns + start_trim_s` 开始。
 - `segment_overlap_start_ns = max(first_valid_time_ns of required streams)`，确保所有 required stream 已经有可用数据。
-- `--stream-start-trim <stream>=<seconds>`：可重复传入，用于单独裁掉某个来源更长的启动暖机段。某 stream 的有效起点为 `first_valid_time_ns + stream_start_trim_s`，最终 segment 起点仍取所有 required stream 有效起点的最大值。
+- `--end-trim-s <seconds>`：默认 `0.0`。目标时间轴在 `segment_overlap_end_ns - end_trim_s` 截止。
 - 这些参数只裁剪对齐样本，不修改任何原始时间戳；不要把它们命名或理解为时间戳平移参数，避免和 ZMQ clock offset、RealSense clock-domain 映射混淆。
 - 推荐起点：普通采集用 `--start-trim-s 1.0`，正式多 RealSense 采集先用 `--start-trim-s 2.0`，再根据真实 alignment report 调小。
 
 默认建议：
 
-- 有 RealSense 图像参与训练时，用 `--alignment-base-source realsense` 或 `--base realsense:<topic>` 指定某条 required image/metadata topic。
-- 只做触觉优先的因果对齐时，用 `--alignment-base-source xense` 或 `--base xense:0`，目标时间轴为 `timestamp_ns_0`。
+- 有 RealSense 图像参与训练时，默认使用 `--alignment-base realsense:bundle` / `--base realsense:bundle`。
+- 只做触觉优先的因果对齐时，用 `--alignment-base xense:pair` / `--base xense:pair`。
 - 只做力/触觉/机器人状态对齐时，用 `--base robot`。
-- 多相机时，每个相机都保留自己的 matched image index 和 `delta_ns`，不要强行假设完全同帧。
+- 只有需要兼容单 topic 视觉基准时，才使用 `realsense:<topic>`。
 
 ## 对齐策略
 
@@ -276,7 +285,7 @@ MainController 自动对齐默认文件：
 
 - `alignment_config.json`
   - 记录输入 demo 路径、源文件路径、base/mode/hz/tolerance 配置、启动暖机裁剪参数和 required stream 列表。
-  - 作为 `tools/align_demo_timestamps.py` 独立重跑时的可选输入。
+  - 作为 `tools/align_demo_timestamps_v3.py` 独立重跑时的可选输入。
 
 - `aligned_index.npz`
   - `t_ns`
@@ -286,11 +295,17 @@ MainController 自动对齐默认文件：
   - `<stream>_time_ns`
   - `<stream>_delta_ns`
   - `<stream>_valid`
-  - RealSense 额外保存 `<camera>_<stream>_topic`、`frame_number`、`bag_message_index`
+  - RealSense image streams 额外保存 `<stream>_recorded_time_ns`
+  - Xense pair 字段：`xense_pair_time_ns`、`xense_pair_source_index`、`xense_pair_valid`、`xense_pair_delta_ms`
+  - RealSense bundle 字段：`realsense_bundle_time_ns`、`realsense_bundle_span_ns`、`realsense_bundle_recorded_time_ns`、`realsense_bundle_recorded_span_ns`、`realsense_bundle_mode_code`、`realsense_bundle_quality`、`realsense_bundle_valid`，以及 per-camera/per-stream selected index/time/recorded time
+  - 不输出 per-sample `<stream>_topic`，不输出 `<stream>_frame_number`，不输出 `realsense_bundle_degraded`
 
 - `aligned_manifest.json`
+  - `schema_version: 3`。
   - 输入 demo 路径和所有源文件路径。
-  - base/mode/hz/tolerance 配置。
+  - `base`、`base_kind`、`mode`、`hz`、trim 配置。
+  - `realsense_alignment_kind`、`xense_alignment_kind`、`scalar_alignment_kind`。
+  - `base_details` 和 `realsense_details`，包括 bundle topics、representative topics、span stats、mode counts、quality counts 和 projection counts。
   - 每个 stream 的帧数、使用帧数、invalid 数量、最大/均值/中位数 `abs(delta_ns)`。
   - ZMQ 每个 source 的 clock offset 和 clock health。
   - RealSense `clock_domain` 分布和缺失统计。
@@ -311,18 +326,18 @@ MainController 自动对齐默认文件：
 
 ## 实现步骤
 
-建议新增两个相似但独立的入口：
+当前有两个相似但独立的入口：
 
 - `MainController/src/main_controller/main_controller/timestamp_alignment.py`：主控内部自动对齐模块，由 `d` 的 `FINALIZING` 流程调用。
-- `tools/align_demo_timestamps.py`：命令行对齐工具，不跨目录 import 主控模块；可以从主控内部实现复制后按 CLI 需求修改。
+- `tools/align_demo_timestamps_v3.py`：命令行对齐工具，不跨目录 import 主控模块；与主控内部模块保持 v3 source/bundle/pair 语义同步。
 
 暂不新增 `tools/materialize_aligned_data.py`；只保留 TODO，等待确认数据集具体组织格式。
 
 ### 1. 读取和路径解析
 
-- 主控内部模块输入：`demo_dir`、`output_dir`、`base`、`mode`、`hz` 和暖机裁剪配置。
-- CLI 参数：`--demo-dir`、`--repo-root`、`--alignment-base-source`、`--base`、`--mode`、`--hz`、`--output-dir`。若同时传入 `--base` 和 `--alignment-base-source`，以 `--base` 为准。
-- 启动暖机参数：`--start-trim-s`、可重复的 `--stream-start-trim <stream>=<seconds>`。
+- 主控内部模块输入：`demo_dir`、`output_dir`、显式 `base`、`mode`、`hz`、`start_trim_s` 和 `end_trim_s`。
+- MainController CLI 参数：`--alignment-base`、`--alignment-mode`、`--alignment-hz`、`--alignment-start-trim-s`、`--alignment-end-trim-s`。
+- Standalone v3 CLI 参数：`--demo-dir`、`--repo-root`、`--base`、`--mode`、`--hz`、`--output-dir`、`--start-trim-s`、`--end-trim-s`、`--allow-degraded`。
 - 当前 timestamp alignment CLI 不提供 `--emit-data` / `--fields`；实际数据 materialize 等待数据集格式确认后另行实现。
 - 读取 `manifest.json`。
 - 读取四个主控 `.npz`。当前第一版不读取 FT300S/Xense 完整 `.npy` 内容；只把 `manifest.sensor_paths.*` 写入 source manifest。
@@ -353,11 +368,12 @@ quality flags
 
 ### 4. 生成目标时间轴
 
-- `realsense:<topic>`：用该 topic 的有效帧时间。
-- `xense:0`：用 Xense `timestamp_ns_0`。
+- `realsense:bundle`：用 RealSense bundle source 的 `realsense_bundle_time_ns`。
+- `realsense:<topic>`：用该 topic 的有效 rosbag image header time。
+- `xense:pair`：用 same-row Xense pair 的 `xense_pair_time_ns`。
 - `robot`：用 ZMQ source 2 的有效帧时间。
 - `grid`：按 required streams 的交集时间范围生成等间隔网格。
-- 每个 segment 先计算 required stream 的 overlap 起点，再应用 `--start-trim-s` 和 `--stream-start-trim`；禁止通过平移原始时间戳来规避启动阶段不齐。
+- 每个 segment 先计算 required group 的 overlap 起止，再应用 `--start-trim-s` 和 `--end-trim-s`；禁止通过平移原始时间戳来规避启动阶段不齐。
 - 当前第一版不做 pause/restart/gap 分段，`segment_id` 全部为 `0`；根据暂停/重启/gap 分段并禁止跨段插值列为后续增强。
 
 ### 5. 匹配和插值
@@ -387,7 +403,7 @@ quality flags
 - 因果模式不会选择未来帧。
 - nearest 模式能正确选择左右最近帧。
 - ZMQ offset 用稳健中位数修正后，delta 接近 0。
-- Xense 作为 base 时使用 `timestamp_ns_0`，两路触觉传感器分别输出 index/time/delta/valid。
+- Xense `xense:pair` base 使用 same-row `max(timestamp_ns_0, timestamp_ns_1)`，两路触觉传感器共享 source index。
 - 后续增强：暂停 gap 不跨段插值。
 
 真实数据验收：

@@ -52,7 +52,7 @@
 - 尚未验证 `ros2 run main_controller main_controller` 的 colcon build/install 流程。
 - 尚未做真实 metadata topic 与当前启用相机列表的运行时发现；目前 topic 来自配置默认值。
 - 已新增 `main_controller/timestamp_alignment.py` 主控内部自动对齐模块；该模块只生成 `alignment_config.json`、`aligned_index.npz`、`aligned_manifest.json` 和 `alignment_report.md`，不生成实际训练数据文件。
-- 已新增 `tools/align_demo_timestamps.py` 独立 CLI 对齐工具；该工具不跨目录 import `main_controller.timestamp_alignment`。
+- 已新增 `tools/align_demo_timestamps_v3.py` 独立 CLI 对齐工具；该工具不跨目录 import `main_controller.timestamp_alignment`。
 - materialize 实际数据集暂不列为本轮待实现模块；需要先在 `timestamp_alignment_plan.md` 中保留 TODO，等待确认数据集具体组织格式。
 - 尚未做真实 RealSense fatal log 注入到子进程 stdout/stderr 的端到端测试。
 - 尚未做真实 demo 采集输出目录、`.npz` 内容和 manifest 的完整验收。
@@ -87,9 +87,9 @@
 - `buffers.py`：管理 demo buffer，完成后保存 `.npz`。
 - `processes.py`：启动/停止/重启 FT300S、XenseTacSensor、RealSense launch。
 - `rosbag_control.py`：封装 `/rosbag2_recorder/record`、`/resume`、`/pause`、`/stop`。
-- `timestamp_alignment.py`：作为 MainController 内部自动对齐模块，在 `FINALIZING` 中生成对齐配置、索引和报告。主控 CLI 支持 `--alignment-base-source realsense|xense`，默认 RealSense；选择 Xense 时使用 `timestamp_ns_0`。
+- `timestamp_alignment.py`：作为 MainController 内部自动对齐模块，在 `FINALIZING` 中生成对齐配置、索引和报告。主控 CLI 使用显式 `--alignment-base`，默认 `realsense:bundle`；支持 `realsense:bundle`、`realsense:<topic>`、`xense:pair`、`robot` 和 `grid`。
 
-`tools/align_demo_timestamps.py` 是待新增的独立命令行对齐工具，不属于 `main_controller` 包内部模块；它不跨目录 import `main_controller.timestamp_alignment`，可以从主控内部实现复制后按 CLI 需求演化。
+`tools/align_demo_timestamps_v3.py` 是独立命令行对齐工具，不属于 `main_controller` 包内部模块；它不跨目录 import `main_controller.timestamp_alignment`，并与主控内部模块保持 v3 source/bundle/pair 语义同步。
 
 ## 状态机
 
@@ -180,7 +180,7 @@
    manifest，保留可用 sensor `saved_file` 和 controller `.npz`，并进入
    `ERROR -> STOPPING -> STOPPED`。
 6. 保存 `.npz` 和 `manifest.json`。
-7. 若采集 `status` 为 `done`，调用 `main_controller/timestamp_alignment.py` 自动生成 `<demo_dir>/aligned/alignment_config.json`、`aligned_index.npz`、`aligned_manifest.json` 和 `alignment_report.md`。默认以 RealSense 视觉时间轴为基准，也可通过 `--alignment-base-source xense` 使用 Xense `timestamp_ns_0`。
+7. 若采集 `status` 为 `done`，调用 `main_controller/timestamp_alignment.py` 自动生成 `<demo_dir>/aligned/alignment_config.json`、`aligned_index.npz`、`aligned_manifest.json` 和 `alignment_report.md`。默认使用 `--alignment-base realsense:bundle`，也可显式选择 `xense:pair`、`robot`、`grid` 或 `realsense:<topic>`。
 8. 将自动对齐结果写入 `manifest.alignment`。自动对齐失败只设置 `manifest.alignment.status = "failed"` 和错误详情，不改写采集 `status`。
 
 ### `x`: discard demo
@@ -269,7 +269,7 @@ demo 之外的数据进入环形缓冲或直接丢弃，但不能停止读。dem
 
 - MainController 内部自动对齐只生成配置、索引和报告，不生成 `aligned_numeric.npz` 等实际训练数据文件。
 - 自动对齐输出目录为 `<demo_dir>/aligned/`，默认包含 `alignment_config.json`、`aligned_index.npz`、`aligned_manifest.json` 和 `alignment_report.md`。
-- `tools/align_demo_timestamps.py` 是相似但独立的 CLI 对齐工具，不跨目录 import 主控模块；可用于重跑对齐、调参或显式 degraded / index-only 诊断。
+- `tools/align_demo_timestamps_v3.py` 是相似但独立的 CLI 对齐工具，不跨目录 import 主控模块；可用于重跑对齐、调参或显式 degraded / index-only 诊断。
 - materialize 实际数据集暂不实现；需要先确认数据集具体组织格式。
 - FT300S/XenseTacSensor ACK payload 中的 `saved_file` 按正式协议只表示
   basename / filename，不是任意路径。MainController runtime 内部按
@@ -277,7 +277,7 @@ demo 之外的数据进入环形缓冲或直接丢弃，但不能停止读。dem
   aligned manifest 中写稳定 repo-root 相对路径 `runtime_frames/<saved_file>`。
 - 默认只对 `manifest.status == "done"` 的 demo 自动生成 aligned index/report；`failed` 和 `discarded` manifest 只用于诊断，除非后处理工具显式启用 degraded / index-only 模式。
 - RealSense 后处理以 manifest 中的 formal/debug_degraded required image topic list 为权威来源；不硬编码具体相机数量。
-- 启动暖机裁剪使用 `--start-trim-s` 和可重复的 `--stream-start-trim <stream>=<seconds>`；这些参数只裁剪样本，不平移原始时间戳。
+- 启动暖机裁剪使用 `--start-trim-s` 和 `--end-trim-s`；这些参数只裁剪全局 overlap 窗口中的样本，不平移原始时间戳。
 - `timestamp_alignment_plan.md` 是详细对齐规范；其中的 `clock_domain`、`HARDWARE_CLOCK`、`SYSTEM_TIME`、`GLOBAL_TIME` 规则应作为后续对齐工具实现依据。
 
 MainController 负责多传感器 start/resume 事务协调。FT300S 和 XenseTacSensor
@@ -335,7 +335,7 @@ readiness 和 rosbag 记录校验；精确 fps/rate 验证留作后续扩展。
   - 丢弃后继续采集流程 `s -> x -> s -> d`，验证 discard 写入 lightweight `status: "discarded"` manifest、不保存高频 `.npz`，且 `x` 后 `WAIT_START` 期间 ZMQ 持续 drain。
   - 自动对齐成功路径只生成 `alignment_config.json`、`aligned_index.npz`、`aligned_manifest.json` 和 `alignment_report.md`，并写入 `manifest.alignment.status = "done"`。
   - 自动对齐失败路径只写入 `manifest.alignment.status = "failed"` 和错误详情，不改写采集 `status`。
-  - `tools/align_demo_timestamps.py` 可独立重跑对齐，且不跨目录 import `main_controller.timestamp_alignment`。
+  - `tools/align_demo_timestamps_v3.py` 可独立重跑对齐，且不跨目录 import `main_controller.timestamp_alignment`。
   - 注入 `Hardware Error` 和 `Depth stream start failure` 日志，验证 RealSense 自动暂停和重启。
   - 执行 `s -> p -> s -> d -> q`，检查 `.npz`、manifest、controller log。
   - 在正确 ROS2 Python 环境下运行 `tools/realsense_bag_compare.py`，复核 metadata 与 image header 时间戳一致性。
