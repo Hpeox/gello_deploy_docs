@@ -1,12 +1,12 @@
 #!/usr/bin/env python3
-"""Standalone group-based timestamp alignment tool for one MainController demo.
+"""Standalone source-based timestamp alignment tool for one MainController demo.
 
 This CLI intentionally does not import main_controller.timestamp_alignment, so it
 can be copied or evolved independently from the controller package.
 
 Typical usage from the repository root:
 
-    python tools/align_demo_timestamps_v2.py \
+    python tools/align_demo_timestamps_v3.py \
       --demo-dir runtime_sessions/demos/demo_YYYYmmdd_HHMMSS \
       --repo-root . \
       --base realsense:bundle \
@@ -40,8 +40,34 @@ Arguments:
         Allow alignment for manifests whose status is not done. Default behavior
         requires manifest.status == "done".
 
+Version 3 uses one Source model for ordinary streams, Xense same-row pairs, and
+RealSense visual bundles. A Source owns a timeline and optional child sources;
+alignment matches a target Source once, then projects parent columns and child
+rows through the same Match object.
+
+RealSense policy is explicit:
+
+    --base realsense:<topic>
+        The selected topic is the target timeline, and RealSense image streams
+        are matched independently as ordinary sources.
+    all other bases
+        RealSense image output is produced from a visual bundle Source. The
+        bundle is matched as a group to the target timeline, and selected image
+        children are projected from that matched bundle row.
+
+Xense is always aligned as a same-row pair Source. The pair timestamp is
+max(timestamp_ns_0, timestamp_ns_1), and xense_0/xense_1 child rows are projected
+from the same raw source row.
+
 The tool writes alignment_config.json, aligned_index.npz, aligned_manifest.json,
 and alignment_report.md, then prints a JSON summary to stdout.
+
+RealSense bundle mode codes stored in aligned_index.npz:
+
+    0 = initial_search
+    1 = locked_plus_one
+    2 = fallback_search
+    3 = degraded_best_effort
 """
 
 from __future__ import annotations
@@ -81,35 +107,65 @@ class Options:
 
 
 @dataclass
-class Stream:
+class ChildSource:
+    name: str
+    display_name: str
+    time_ns: np.ndarray
+    source_index: np.ndarray
+    columns: dict[str, np.ndarray] = field(default_factory=dict)
+    details: dict[str, Any] = field(default_factory=dict)
+
+    def subset(self, indices: np.ndarray) -> 'ChildSource':
+        return ChildSource(
+            self.name,
+            self.display_name,
+            self.time_ns[indices].astype(np.int64, copy=False),
+            self.source_index[indices].astype(np.int64, copy=False),
+            {key: value[indices] for key, value in self.columns.items()},
+            dict(self.details),
+        )
+
+
+@dataclass
+class Source:
     name: str
     display_name: str
     time_ns: np.ndarray
     source_index: np.ndarray
     tolerance_causal_ns: int
     tolerance_nearest_ns: int
-    frame_number: np.ndarray | None = None
-    topic: str | None = None
-    recorded_time_ns: np.ndarray | None = None
-    timestamp_source: str = 'npz'
+    columns: dict[str, np.ndarray] = field(default_factory=dict)
+    children: dict[str, ChildSource] = field(default_factory=dict)
+    details: dict[str, Any] = field(default_factory=dict)
 
-    def sorted_valid(self) -> 'Stream':
+    def sorted_valid(self) -> 'Source':
         valid = self.time_ns > 0
         order = np.argsort(self.time_ns[valid], kind='stable')
         indices = np.nonzero(valid)[0][order]
-        frame_number = None if self.frame_number is None else self.frame_number[indices]
-        recorded_time_ns = None if self.recorded_time_ns is None else self.recorded_time_ns[indices]
-        return Stream(
+        return Source(
             self.name,
             self.display_name,
             self.time_ns[indices].astype(np.int64, copy=False),
             self.source_index[indices].astype(np.int64, copy=False),
             self.tolerance_causal_ns,
             self.tolerance_nearest_ns,
-            frame_number,
-            self.topic,
-            recorded_time_ns,
-            self.timestamp_source,
+            {key: value[indices] for key, value in self.columns.items()},
+            {key: child.subset(indices) for key, child in self.children.items()},
+            dict(self.details),
+        )
+
+    def trim(self, start_ns: int, end_ns: int) -> 'Source':
+        keep = (self.time_ns >= start_ns) & (self.time_ns <= end_ns)
+        return Source(
+            self.name,
+            self.display_name,
+            self.time_ns[keep],
+            self.source_index[keep],
+            self.tolerance_causal_ns,
+            self.tolerance_nearest_ns,
+            {key: value[keep] for key, value in self.columns.items()},
+            {key: child.subset(keep) for key, child in self.children.items()},
+            trim_details(self.details, self.source_index[keep]),
         )
 
 
@@ -129,22 +185,9 @@ class Match:
 
 
 @dataclass
-class SourceTable:
-    name: str
-    display_name: str
-    time_ns: np.ndarray
-    source_index: np.ndarray
-    tolerance_causal_ns: int
-    tolerance_nearest_ns: int
-    columns: dict[str, np.ndarray] = field(default_factory=dict)
-    stream_matches: dict[str, Match] = field(default_factory=dict)
-    details: dict[str, Any] = field(default_factory=dict)
-
-
-@dataclass
 class AlignmentContext:
-    streams: dict[str, Stream]
-    xense_pair: SourceTable | None
+    sources: dict[str, Source]
+    xense_pair: Source | None
 
 
 def align_demo(demo_dir: Path, options: Options) -> dict[str, Any]:
@@ -157,16 +200,16 @@ def align_demo(demo_dir: Path, options: Options) -> dict[str, Any]:
 
     warnings: list[str] = []
     npz_paths = resolve_npz_paths(demo_dir, manifest)
-    streams, zmq_clock_offsets = load_streams(demo_dir, manifest, npz_paths, warnings)
-    streams = {name: stream for name, stream in streams.items() if len(stream.time_ns) > 0}
-    if not streams:
+    sources, zmq_clock_offsets = load_sources(demo_dir, manifest, npz_paths, warnings)
+    sources = {name: source for name, source in sources.items() if len(source.time_ns) > 0}
+    if not sources:
         raise RuntimeError('no timestamp streams found')
 
-    xense_pair = build_xense_pair(npz_paths) if 'xense' in npz_paths else None
-    context = AlignmentContext(streams, xense_pair)
-    base = validate_base(options.base, streams)
+    xense_pair = build_xense_pair_source(npz_paths) if 'xense' in npz_paths else None
+    context = AlignmentContext(sources, xense_pair)
+    base = validate_base(options.base, sources)
     start_ns, end_ns = alignment_window(context, options)
-    target = build_target_table(base, context, manifest, options, warnings, start_ns, end_ns)
+    target = build_target_source(base, context, manifest, options, warnings, start_ns, end_ns)
     t_ns = target.time_ns
     if len(t_ns) == 0:
         raise RuntimeError('target timeline is empty after trims')
@@ -180,7 +223,7 @@ def align_demo(demo_dir: Path, options: Options) -> dict[str, Any]:
     valid_masks: list[np.ndarray] = []
     realsense_alignment_kind, realsense_details = align_realsense_group(
         base,
-        streams,
+        sources,
         manifest,
         target,
         t_ns,
@@ -192,21 +235,21 @@ def align_demo(demo_dir: Path, options: Options) -> dict[str, Any]:
         stats,
         valid_masks,
     )
-    xense_alignment_kind = align_xense_pair_group(xense_pair, streams, t_ns, options, arrays, stats, valid_masks)
-    scalar_alignment_kind = align_scalar_streams(streams, t_ns, options, arrays, stats, valid_masks)
+    xense_alignment_kind = align_xense_pair_group(xense_pair, t_ns, options, arrays, stats, valid_masks)
+    scalar_alignment_kind = align_scalar_sources(sources, t_ns, options, arrays, stats, valid_masks)
 
     sample_valid = np.logical_and.reduce(valid_masks) if valid_masks else np.ones(len(t_ns), dtype=bool)
     arrays['sample_valid'] = sample_valid
     index_path = output_dir / 'aligned_index.npz'
-    np.savez(index_path, **arrays)
+    np.savez_compressed(index_path, **arrays)
 
-    sources = source_paths(manifest)
+    source_path_payload = source_paths(manifest)
     config = {
-        'schema_version': 2,
+        'schema_version': 3,
         'demo_dir': '.',
         'output_dir': relative_to(output_dir, demo_dir),
         'base': base,
-        'base_kind': target.details.get('kind', 'stream'),
+        'base_kind': target.details.get('kind', 'source'),
         'realsense_alignment_kind': realsense_alignment_kind,
         'xense_alignment_kind': xense_alignment_kind,
         'scalar_alignment_kind': scalar_alignment_kind,
@@ -215,8 +258,8 @@ def align_demo(demo_dir: Path, options: Options) -> dict[str, Any]:
         'start_trim_s': options.start_trim_s,
         'end_trim_s': options.end_trim_s,
         'trim_window_ns': {'start': int(start_ns), 'end': int(end_ns)},
-        'sources': sources,
-        'streams': {name: {'display_name': stream.display_name, 'topic': stream.topic} for name, stream in streams.items()},
+        'sources': source_path_payload,
+        'streams': {name: {'display_name': source.display_name, 'topic': source.details.get('topic')} for name, source in sources.items()},
         'base_details': target.details,
         'realsense_details': realsense_details,
     }
@@ -224,13 +267,13 @@ def align_demo(demo_dir: Path, options: Options) -> dict[str, Any]:
     write_json(config_path, config)
 
     aligned_manifest = {
-        'schema_version': 2,
+        'schema_version': 3,
         'status': 'done',
         'demo_dir': '.',
         'sample_count': int(len(t_ns)),
         'valid_count': int(sample_valid.sum()),
         'base': base,
-        'base_kind': target.details.get('kind', 'stream'),
+        'base_kind': target.details.get('kind', 'source'),
         'realsense_alignment_kind': realsense_alignment_kind,
         'xense_alignment_kind': xense_alignment_kind,
         'scalar_alignment_kind': scalar_alignment_kind,
@@ -239,7 +282,7 @@ def align_demo(demo_dir: Path, options: Options) -> dict[str, Any]:
         'start_trim_s': options.start_trim_s,
         'end_trim_s': options.end_trim_s,
         'trim_window_ns': {'start': int(start_ns), 'end': int(end_ns)},
-        'sources': sources,
+        'sources': source_path_payload,
         'streams': stats,
         'base_details': target.details,
         'realsense_details': realsense_details,
@@ -260,55 +303,55 @@ def align_demo(demo_dir: Path, options: Options) -> dict[str, Any]:
         'sample_count': int(len(t_ns)),
         'valid_count': int(sample_valid.sum()),
         'base': base,
-        'base_kind': target.details.get('kind', 'stream'),
+        'base_kind': target.details.get('kind', 'source'),
         'zmq_clock_offsets': zmq_clock_offsets,
         'warnings': warnings,
     }
 
 
-def load_streams(
+def load_sources(
     demo_dir: Path,
     manifest: dict[str, Any],
     npz_paths: dict[str, Path],
     warnings: list[str],
-) -> tuple[dict[str, Stream], dict[str, dict[str, Any]]]:
-    streams: dict[str, Stream] = {}
+) -> tuple[dict[str, Source], dict[str, dict[str, Any]]]:
+    sources: dict[str, Source] = {}
     zmq_clock_offsets: dict[str, dict[str, Any]] = {}
     if 'ft300' in npz_paths:
         data = np.load(npz_paths['ft300'], allow_pickle=True)
-        streams['ft300s'] = Stream('ft300s', 'FT300S', int_array(data['timestamp_ns']), np.arange(len(data['timestamp_ns']), dtype=np.int64), 20_000_000, 10_000_000).sorted_valid()
+        sources['ft300s'] = Source('ft300s', 'FT300S', int_array(data['timestamp_ns']), np.arange(len(data['timestamp_ns']), dtype=np.int64), 20_000_000, 10_000_000).sorted_valid()
     if 'xense' in npz_paths:
         data = np.load(npz_paths['xense'], allow_pickle=True)
-        streams['xense_0'] = Stream('xense_0', 'Xense sensor 0', int_array(data['timestamp_ns_0']), np.arange(len(data['timestamp_ns_0']), dtype=np.int64), 66_700_000, 33_400_000).sorted_valid()
-        streams['xense_1'] = Stream('xense_1', 'Xense sensor 1', int_array(data['timestamp_ns_1']), np.arange(len(data['timestamp_ns_1']), dtype=np.int64), 66_700_000, 33_400_000).sorted_valid()
+        sources['xense_0'] = Source('xense_0', 'Xense sensor 0', int_array(data['timestamp_ns_0']), np.arange(len(data['timestamp_ns_0']), dtype=np.int64), 66_700_000, 33_400_000).sorted_valid()
+        sources['xense_1'] = Source('xense_1', 'Xense sensor 1', int_array(data['timestamp_ns_1']), np.arange(len(data['timestamp_ns_1']), dtype=np.int64), 66_700_000, 33_400_000).sorted_valid()
     if 'zmq' in npz_paths:
         data = np.load(npz_paths['zmq'], allow_pickle=True)
-        sources = int_array(data['source'])
+        zmq_source_ids = int_array(data['source'])
         raw_stamp_ns = np.asarray([int(round(float(value) * NSEC_PER_SEC)) for value in data['stamp_s']], dtype=np.int64)
         recv_time_ns = int_array(data['recv_time_ns'])
-        for source in sorted(set(int(value) for value in sources if value > 0)):
-            mask = sources == source
+        for source_id in sorted(set(int(value) for value in zmq_source_ids if value > 0)):
+            mask = zmq_source_ids == source_id
             offset_ns = int(np.median(recv_time_ns[mask] - raw_stamp_ns[mask]))
-            stream_name = f'zmq_source_{source}'
+            stream_name = f'zmq_source_{source_id}'
             offset_ms = float(offset_ns / 1_000_000.0)
             zmq_clock_offsets[stream_name] = {
-                'source': source,
+                'source': source_id,
                 'offset_ms': offset_ms,
                 'offset_ns': offset_ns,
                 'frame_count': int(mask.sum()),
             }
             if abs(offset_ms) > ZMQ_CLOCK_OFFSET_WARN_MS:
-                warnings.append(zmq_clock_offset_warning(source, offset_ms))
-            streams[stream_name] = Stream(
+                warnings.append(zmq_clock_offset_warning(source_id, offset_ms))
+            sources[stream_name] = Source(
                 stream_name,
-                f'ZMQ source {source}',
+                f'ZMQ source {source_id}',
                 raw_stamp_ns[mask] + offset_ns,
                 np.nonzero(mask)[0].astype(np.int64),
                 40_000_000,
                 20_000_000,
             ).sorted_valid()
-    streams.update(realsense_streams(demo_dir, manifest, npz_paths.get('realsense'), warnings))
-    return streams, zmq_clock_offsets
+    sources.update(realsense_sources(demo_dir, manifest, npz_paths.get('realsense'), warnings))
+    return sources, zmq_clock_offsets
 
 
 def zmq_clock_offset_warning(source: int, offset_ms: float) -> str:
@@ -318,15 +361,9 @@ def zmq_clock_offset_warning(source: int, offset_ms: float) -> str:
     )
 
 
-def realsense_streams(demo_dir: Path, manifest: dict[str, Any], npz_path: Path | None, warnings: list[str]) -> dict[str, Stream]:
+def realsense_sources(demo_dir: Path, manifest: dict[str, Any], npz_path: Path | None, warnings: list[str]) -> dict[str, Source]:
     if npz_path is None:
         return {}
-    metadata = np.load(npz_path, allow_pickle=True)
-    topics = np.asarray(metadata['topic']).astype(str)
-    frame_number_by_metadata_topic: dict[str, np.ndarray] = {}
-    for topic in sorted(set(topics)):
-        mask = topics == topic
-        frame_number_by_metadata_topic[topic] = int_array(metadata['frame_number'][mask])
     required_topics = required_image_topics(manifest)
     rosbag = read_rosbag_image_streams(resolve_rosbag_uri(demo_dir, manifest), required_topics, warnings)
     missing_required = [
@@ -336,26 +373,25 @@ def realsense_streams(demo_dir: Path, manifest: dict[str, Any], npz_path: Path |
     ]
     if missing_required:
         raise RuntimeError(f'RealSense required image topics are unreadable from rosbag image messages: {missing_required}')
-    streams: dict[str, Stream] = {}
+    sources: dict[str, Source] = {}
     for image_topic in required_topics:
         name = realsense_stream_name(image_topic)
         image_stream = rosbag[image_topic]
-        frame_number = frame_number_by_metadata_topic.get(image_topic_to_metadata_topic(image_topic))
-        if frame_number is not None:
-            frame_number = frame_number[: len(image_stream.header_time_ns)]
-        streams[name] = Stream(
+        columns: dict[str, np.ndarray] = {
+            f'{name}_recorded_time_ns': image_stream.recorded_time_ns,
+        }
+        sources[name] = Source(
             name,
             f'RealSense {image_topic}',
             image_stream.header_time_ns,
             np.arange(len(image_stream.header_time_ns), dtype=np.int64),
             66_700_000,
             33_400_000,
-            frame_number,
-            image_topic,
-            image_stream.recorded_time_ns,
-            'rosbag_image',
+            columns,
+            {},
+            {'topic': image_topic, 'timestamp_source': 'rosbag_image'},
         ).sorted_valid()
-    return streams
+    return sources
 
 
 def read_rosbag_image_streams(rosbag_uri: Path | None, topics: list[str], warnings: list[str]) -> dict[str, RosbagImageStream]:
@@ -393,7 +429,7 @@ def read_rosbag_image_streams(rosbag_uri: Path | None, topics: list[str], warnin
         return {}
 
 
-def build_target_table(
+def build_target_source(
     base: str,
     context: AlignmentContext,
     manifest: dict[str, Any],
@@ -401,74 +437,70 @@ def build_target_table(
     warnings: list[str],
     start_ns: int,
     end_ns: int,
-) -> SourceTable:
+) -> Source:
     if base == 'xense:pair':
         if context.xense_pair is None:
             raise RuntimeError('xense:pair base requires xense timestamp npz')
-        return trim_table(context.xense_pair, start_ns, end_ns)
+        return context.xense_pair.trim(start_ns, end_ns)
     if base == 'realsense:bundle':
-        return build_realsense_bundle_table(context.streams, manifest, warnings, start_ns, end_ns)
+        return build_realsense_bundle_source(context.sources, manifest, warnings, start_ns, end_ns)
     if base == 'grid':
         step_ns = int(round(NSEC_PER_SEC / options.hz))
         time_ns = np.arange(start_ns, end_ns + 1, step_ns, dtype=np.int64)
-        return base_target_table(base, time_ns, {'kind': 'grid', 'hz': options.hz})
+        return synthetic_source(base, base, time_ns, {'kind': 'grid', 'hz': options.hz})
     if base == 'robot':
-        stream = context.streams.get('zmq_source_2')
-        if stream is None:
+        source = context.sources.get('zmq_source_2')
+        if source is None:
             raise RuntimeError('robot base requires zmq_source_2')
-        return stream_target_table('robot', stream, start_ns, end_ns, {'kind': 'robot'})
+        return clone_target_source('robot', source, start_ns, end_ns, {'kind': 'robot'})
     if is_realsense_single_topic_base(base):
         topic = base.split(':', 1)[1]
-        stream = context.streams.get(realsense_stream_name(topic))
-        if stream is None:
+        source = context.sources.get(realsense_stream_name(topic))
+        if source is None:
             raise RuntimeError(f'base stream has no data: {base}')
-        return stream_target_table(base, stream, start_ns, end_ns, {'kind': 'realsense_single', 'topic': topic})
+        return clone_target_source(base, source, start_ns, end_ns, {'kind': 'realsense_single', 'topic': topic})
     raise RuntimeError(
         f'unsupported --base {base!r}; choose realsense:bundle, realsense:<topic>, xense:pair, grid, or robot'
     )
 
 
-def stream_target_table(
+def clone_target_source(
     name: str,
-    stream: Stream,
+    source: Source,
     start_ns: int,
     end_ns: int,
     details: dict[str, Any],
-) -> SourceTable:
-    start_ns = max(int(stream.time_ns[0]), start_ns)
-    end_ns = min(int(stream.time_ns[-1]), end_ns)
+) -> Source:
+    start_ns = max(int(source.time_ns[0]), start_ns)
+    end_ns = min(int(source.time_ns[-1]), end_ns)
     if end_ns < start_ns:
         time_ns = np.asarray([], dtype=np.int64)
     else:
-        time_ns = stream.time_ns[(stream.time_ns >= start_ns) & (stream.time_ns <= end_ns)]
-    return SourceTable(
+        time_ns = source.time_ns[(source.time_ns >= start_ns) & (source.time_ns <= end_ns)]
+    return Source(
         name,
         name,
         time_ns,
         np.arange(len(time_ns), dtype=np.int64),
-        stream.tolerance_causal_ns,
-        stream.tolerance_nearest_ns,
-        {},
-        {},
-        details,
+        source.tolerance_causal_ns,
+        source.tolerance_nearest_ns,
+        details=details,
     )
 
 
-def base_target_table(name: str, time_ns: np.ndarray, details: dict[str, Any]) -> SourceTable:
-    return SourceTable(
+def synthetic_source(name: str, display_name: str, time_ns: np.ndarray, details: dict[str, Any]) -> Source:
+    return Source(
         name,
-        name,
+        display_name,
         time_ns,
         np.arange(len(time_ns), dtype=np.int64),
         66_700_000,
         33_400_000,
-        {},
-        {},
-        details,
+        details=details,
     )
 
 
-def build_xense_pair(npz_paths: dict[str, Path]) -> SourceTable:
+def build_xense_pair_source(npz_paths: dict[str, Path]) -> Source:
     if 'xense' not in npz_paths:
         raise RuntimeError('xense:pair base requires xense timestamp npz')
     data = np.load(npz_paths['xense'], allow_pickle=True)
@@ -490,9 +522,9 @@ def build_xense_pair(npz_paths: dict[str, Path]) -> SourceTable:
         'xense_pair_time_ns': pair_time,
         'xense_pair_source_index': source_index,
     }
-    stream_matches = {
-        'xense_0': Match(source_index, source_index, ts0, ts0 - pair_time, np.ones(len(pair_time), dtype=bool)),
-        'xense_1': Match(source_index, source_index, ts1, ts1 - pair_time, np.ones(len(pair_time), dtype=bool)),
+    children = {
+        'xense_0': ChildSource('xense_0', 'Xense sensor 0', ts0, source_index),
+        'xense_1': ChildSource('xense_1', 'Xense sensor 1', ts1, source_index),
     }
     details = {
         'kind': 'xense_pair',
@@ -500,7 +532,7 @@ def build_xense_pair(npz_paths: dict[str, Path]) -> SourceTable:
         'source_index_start': None if len(source_index) == 0 else int(source_index[0]),
         'source_index_end': None if len(source_index) == 0 else int(source_index[-1]),
     }
-    return SourceTable(
+    return Source(
         'xense_pair',
         'Xense same-row pair',
         pair_time,
@@ -508,35 +540,24 @@ def build_xense_pair(npz_paths: dict[str, Path]) -> SourceTable:
         66_700_000,
         33_400_000,
         columns,
-        stream_matches,
+        children,
         details,
     )
 
 
-def trim_table(table: SourceTable, start_ns: int, end_ns: int) -> SourceTable:
-    keep = (table.time_ns >= start_ns) & (table.time_ns <= end_ns)
-    columns = {key: value[keep] for key, value in table.columns.items()}
-    details = dict(table.details)
-    if table.name == 'xense_pair':
-        source_index = table.source_index[keep]
-        details['pair_count'] = int(len(source_index))
-        details['source_index_start'] = None if len(source_index) == 0 else int(source_index[0])
-        details['source_index_end'] = None if len(source_index) == 0 else int(source_index[-1])
-    return SourceTable(
-        table.name,
-        table.display_name,
-        table.time_ns[keep],
-        table.source_index[keep],
-        table.tolerance_causal_ns,
-        table.tolerance_nearest_ns,
-        columns,
-        {key: subset_match(match, keep) for key, match in table.stream_matches.items()},
-        details,
-    )
+def trim_details(details: dict[str, Any], source_index: np.ndarray) -> dict[str, Any]:
+    result = dict(details)
+    if result.get('kind') == 'xense_pair':
+        result['pair_count'] = int(len(source_index))
+        result['source_index_start'] = None if len(source_index) == 0 else int(source_index[0])
+        result['source_index_end'] = None if len(source_index) == 0 else int(source_index[-1])
+    if result.get('kind') == 'realsense_bundle':
+        result['bundle_count'] = int(len(source_index))
+    return result
 
 
-def empty_table(name: str, display_name: str, kind: str) -> SourceTable:
-    return SourceTable(
+def empty_source(name: str, display_name: str, kind: str) -> Source:
+    return Source(
         name,
         display_name,
         np.asarray([], dtype=np.int64),
@@ -549,24 +570,14 @@ def empty_table(name: str, display_name: str, kind: str) -> SourceTable:
     )
 
 
-def subset_match(match: Match, keep: np.ndarray) -> Match:
-    return Match(
-        match.index[keep],
-        match.position[keep],
-        match.time_ns[keep],
-        match.delta_ns[keep],
-        match.valid[keep],
-    )
-
-
 def alignment_window(context: AlignmentContext, options: Options) -> tuple[int, int]:
     bounds: list[tuple[int, int]] = []
     if context.xense_pair is not None and len(context.xense_pair.time_ns) > 0:
         bounds.append((int(context.xense_pair.time_ns[0]), int(context.xense_pair.time_ns[-1])))
-    for name, stream in context.streams.items():
+    for name, source in context.sources.items():
         if name in {'xense_0', 'xense_1'}:
             continue
-        bounds.append((int(stream.time_ns[0]), int(stream.time_ns[-1])))
+        bounds.append((int(source.time_ns[0]), int(source.time_ns[-1])))
     if not bounds:
         raise RuntimeError('no timestamp groups found')
     start_ns = max(start for start, _ in bounds) + int(round(options.start_trim_s * NSEC_PER_SEC))
@@ -576,7 +587,7 @@ def alignment_window(context: AlignmentContext, options: Options) -> tuple[int, 
     return int(start_ns), int(end_ns)
 
 
-def validate_base(base: str, streams: dict[str, Stream]) -> str:
+def validate_base(base: str, sources: dict[str, Source]) -> str:
     if base == 'auto':
         raise RuntimeError(
             '--base auto is no longer supported; choose an explicit base: '
@@ -595,9 +606,9 @@ def validate_base(base: str, streams: dict[str, Stream]) -> str:
 
 def align_realsense_group(
     base: str,
-    streams: dict[str, Stream],
+    sources: dict[str, Source],
     manifest: dict[str, Any],
-    target: SourceTable,
+    target: Source,
     t_ns: np.ndarray,
     options: Options,
     warnings: list[str],
@@ -607,14 +618,14 @@ def align_realsense_group(
     stats: dict[str, dict[str, Any]],
     valid_masks: list[np.ndarray],
 ) -> tuple[str, dict[str, Any]]:
-    realsense_streams_for_group = {
-        name: stream for name, stream in streams.items() if name.startswith('realsense_')
+    realsense_sources_for_group = {
+        name: source for name, source in sources.items() if name.startswith('realsense_')
     }
-    if not realsense_streams_for_group:
+    if not realsense_sources_for_group:
         return 'absent', {}
     if is_realsense_single_topic_base(base):
-        for stream in realsense_streams_for_group.values():
-            add_stream_match(stream, match_stream(t_ns, stream, options.mode), t_ns, arrays, stats, valid_masks)
+        for source in realsense_sources_for_group.values():
+            emit_source(source, match_source(t_ns, source, options.mode), t_ns, arrays, stats, valid_masks)
         return 'single_topic', {
             'kind': 'single_topic',
             'topic': base.split(':', 1)[1],
@@ -623,18 +634,18 @@ def align_realsense_group(
     if base == 'realsense:bundle':
         bundle_source = target
     else:
-        bundle_source = build_realsense_bundle_table(streams, manifest, warnings, start_ns, end_ns)
+        bundle_source = build_realsense_bundle_source(sources, manifest, warnings, start_ns, end_ns)
     if len(bundle_source.time_ns) == 0:
         raise RuntimeError('RealSense bundle source timeline is empty')
-    bundle_match = match_table(t_ns, bundle_source, options.mode)
-    emit_table_projection(
+    bundle_match = match_source(t_ns, bundle_source, options.mode)
+    emit_source(
         bundle_source,
         bundle_match,
         t_ns,
-        realsense_streams_for_group,
         arrays,
         stats,
         valid_masks,
+        valid_output_name='realsense_bundle_valid',
     )
     details = dict(bundle_source.details)
     details['kind'] = 'bundle'
@@ -651,28 +662,30 @@ def is_realsense_single_topic_base(base: str) -> bool:
     return base.startswith('realsense:') and base != 'realsense:bundle'
 
 
-def emit_table_projection(
-    table: SourceTable,
-    table_match: Match,
+def emit_source(
+    source: Source,
+    source_match: Match,
     t_ns: np.ndarray,
-    streams: dict[str, Stream],
     arrays: dict[str, np.ndarray],
     stats: dict[str, dict[str, Any]],
     valid_masks: list[np.ndarray],
+    valid_output_name: str | None = None,
 ) -> None:
-    positions = table_match.position
-    valid = table_match.valid
+    positions = source_match.position
+    valid = source_match.valid
     present = positions >= 0
     matched = present & valid
-    arrays.update(project_columns(table.columns, positions, matched))
-    arrays['realsense_bundle_valid'] = valid
-    for stream_name, stream in streams.items():
-        source_match = table.stream_matches.get(stream_name)
-        if source_match is None:
-            raise RuntimeError(f'RealSense bundle source did not produce a match for {stream_name}')
-        projected_match = project_stream_match_from_table(source_match, positions, matched, valid, t_ns)
-        add_stream_match(stream, projected_match, t_ns, arrays, stats, valid_masks)
+    arrays[f'{source.name}_index'] = source_match.index
+    arrays[f'{source.name}_time_ns'] = source_match.time_ns
+    arrays[f'{source.name}_delta_ns'] = source_match.delta_ns
+    arrays[f'{source.name}_valid'] = valid
+    if valid_output_name:
+        arrays[valid_output_name] = valid
+    arrays.update(project_columns(source.columns, positions, matched))
+    for child in source.children.values():
+        emit_child_source(child, positions, matched, valid, t_ns, arrays, stats, valid_masks)
     valid_masks.append(valid)
+    stats[source.name] = entity_stats(source.display_name, len(source.time_ns), source_match, source.details)
 
 
 def project_columns(columns: dict[str, np.ndarray], positions: np.ndarray, present: np.ndarray) -> dict[str, np.ndarray]:
@@ -691,32 +704,55 @@ def project_table_column(values: np.ndarray, positions: np.ndarray, present: np.
         result = np.zeros(len(positions), dtype=bool)
         result[present] = values[positions[present]]
         return result
+    if values.dtype.kind == 'u':
+        result = np.full(len(positions), np.iinfo(values.dtype).max, dtype=values.dtype)
+        result[present] = values[positions[present]]
+        return result
     result = np.full(len(positions), -1, dtype=values.dtype)
     result[present] = values[positions[present]]
     return result
 
 
-def project_stream_match_from_table(
-    source_match: Match,
+def emit_child_source(
+    child: ChildSource,
+    parent_positions: np.ndarray,
+    matched: np.ndarray,
+    parent_valid: np.ndarray,
+    t_ns: np.ndarray,
+    arrays: dict[str, np.ndarray],
+    stats: dict[str, dict[str, Any]],
+    valid_masks: list[np.ndarray],
+) -> None:
+    child_match = project_child_match(child, parent_positions, matched, parent_valid, t_ns)
+    arrays[f'{child.name}_index'] = child_match.index
+    arrays[f'{child.name}_time_ns'] = child_match.time_ns
+    arrays[f'{child.name}_delta_ns'] = child_match.delta_ns
+    arrays[f'{child.name}_valid'] = child_match.valid
+    arrays.update(project_columns(child.columns, parent_positions, matched))
+    valid_masks.append(child_match.valid)
+    stats[child.name] = entity_stats(child.display_name, len(child.time_ns), child_match, child.details)
+
+
+def project_child_match(
+    child: ChildSource,
     positions: np.ndarray,
     matched: np.ndarray,
-    bundle_valid: np.ndarray,
+    parent_valid: np.ndarray,
     t_ns: np.ndarray,
 ) -> Match:
     index = np.full(len(t_ns), -1, dtype=np.int64)
     position = np.full(len(t_ns), -1, dtype=np.int64)
     time_ns = np.full(len(t_ns), -1, dtype=np.int64)
-    index[matched] = source_match.index[positions[matched]]
-    position[matched] = source_match.position[positions[matched]]
-    time_ns[matched] = source_match.time_ns[positions[matched]]
+    index[matched] = child.source_index[positions[matched]]
+    position[matched] = positions[matched]
+    time_ns[matched] = child.time_ns[positions[matched]]
     source_valid = np.zeros(len(t_ns), dtype=bool)
-    source_valid[matched] = source_match.valid[positions[matched]]
-    return Match(index, position, time_ns, time_ns - t_ns, bundle_valid & matched & source_valid)
+    source_valid[matched] = child.time_ns[positions[matched]] > 0
+    return Match(index, position, time_ns, time_ns - t_ns, parent_valid & matched & source_valid)
 
 
 def align_xense_pair_group(
-    xense_pair: SourceTable | None,
-    streams: dict[str, Stream],
+    xense_pair: Source | None,
     t_ns: np.ndarray,
     options: Options,
     arrays: dict[str, np.ndarray],
@@ -725,27 +761,19 @@ def align_xense_pair_group(
 ) -> str:
     if xense_pair is None:
         return 'absent'
-    if 'xense_0' not in streams or 'xense_1' not in streams:
+    if 'xense_0' not in xense_pair.children or 'xense_1' not in xense_pair.children:
         raise RuntimeError('Xense pair alignment requires xense_0 and xense_1 streams')
-    pair_match = match_table(t_ns, xense_pair, options.mode)
-    matched = (pair_match.position >= 0) & pair_match.valid
-    arrays.update(project_columns(xense_pair.columns, pair_match.position, matched))
-    arrays['xense_pair_valid'] = pair_match.valid
+    pair_match = match_source(t_ns, xense_pair, options.mode)
+    emit_source(xense_pair, pair_match, t_ns, arrays, stats, valid_masks)
     pair_delta_ms = np.full(len(t_ns), np.nan, dtype=np.float64)
     present = pair_match.position >= 0
     pair_delta_ms[present] = pair_match.delta_ns[present].astype(np.float64) / 1_000_000.0
     arrays['xense_pair_delta_ms'] = pair_delta_ms
-    valid_masks.append(pair_match.valid)
-
-    match_0 = project_stream_match_from_table(xense_pair.stream_matches['xense_0'], pair_match.position, matched, pair_match.valid, t_ns)
-    match_1 = project_stream_match_from_table(xense_pair.stream_matches['xense_1'], pair_match.position, matched, pair_match.valid, t_ns)
-    add_stream_match(streams['xense_0'], match_0, t_ns, arrays, stats, valid_masks)
-    add_stream_match(streams['xense_1'], match_1, t_ns, arrays, stats, valid_masks)
     return 'same_row_pair'
 
 
-def align_scalar_streams(
-    streams: dict[str, Stream],
+def align_scalar_sources(
+    sources: dict[str, Source],
     t_ns: np.ndarray,
     options: Options,
     arrays: dict[str, np.ndarray],
@@ -753,59 +781,31 @@ def align_scalar_streams(
     valid_masks: list[np.ndarray],
 ) -> str:
     scalar_count = 0
-    for name, stream in streams.items():
+    for name, source in sources.items():
         if name.startswith('realsense_') or name in {'xense_0', 'xense_1'}:
             continue
-        add_stream_match(stream, match_stream(t_ns, stream, options.mode), t_ns, arrays, stats, valid_masks)
+        emit_source(source, match_source(t_ns, source, options.mode), t_ns, arrays, stats, valid_masks)
         scalar_count += 1
     return 'matched_streams' if scalar_count else 'absent'
 
 
-def add_stream_match(
-    stream: Stream,
-    match: Match,
-    t_ns: np.ndarray,
-    arrays: dict[str, np.ndarray],
-    stats: dict[str, dict[str, Any]],
-    valid_masks: list[np.ndarray],
-) -> None:
-    arrays[f'{stream.name}_index'] = match.index
-    arrays[f'{stream.name}_time_ns'] = match.time_ns
-    arrays[f'{stream.name}_delta_ns'] = match.delta_ns
-    arrays[f'{stream.name}_valid'] = match.valid
-    if stream.frame_number is not None:
-        frame_number = np.full(len(t_ns), -1, dtype=np.int64)
-        good = match.position >= 0
-        frame_number[good] = stream.frame_number[match.position[good]]
-        arrays[f'{stream.name}_frame_number'] = frame_number
-    if stream.topic is not None:
-        arrays[f'{stream.name}_topic'] = np.asarray([stream.topic] * len(t_ns))
-    if stream.recorded_time_ns is not None:
-        recorded_time = np.full(len(t_ns), -1, dtype=np.int64)
-        good = match.position >= 0
-        recorded_time[good] = stream.recorded_time_ns[match.position[good]]
-        arrays[f'{stream.name}_recorded_time_ns'] = recorded_time
-    valid_masks.append(match.valid)
-    stats[stream.name] = stream_stats(stream, match)
-
-
-def build_realsense_bundle_table(
-    streams: dict[str, Stream],
+def build_realsense_bundle_source(
+    sources: dict[str, Source],
     manifest: dict[str, Any],
     warnings: list[str],
     start_ns: int,
     end_ns: int,
-) -> SourceTable:
+) -> Source:
     required_topics = required_image_topics(manifest)
     if not required_topics:
         raise RuntimeError('realsense:bundle requires manifest required image topics')
     missing_topics = []
     non_image_sources = []
     for topic in required_topics:
-        stream = streams.get(realsense_stream_name(topic))
-        if stream is None:
+        source = sources.get(realsense_stream_name(topic))
+        if source is None:
             missing_topics.append(topic)
-        elif stream.timestamp_source != 'rosbag_image':
+        elif source.details.get('timestamp_source') != 'rosbag_image':
             non_image_sources.append(topic)
     if missing_topics:
         raise RuntimeError(f'realsense:bundle requires readable rosbag image topics; missing: {missing_topics}')
@@ -814,121 +814,129 @@ def build_realsense_bundle_table(
 
     camera_topics = group_realsense_topics_by_camera(required_topics)
     representative_topics: dict[str, str] = {}
-    representative_streams: dict[str, Stream] = {}
+    representative_sources: dict[str, Source] = {}
     for camera, topics in camera_topics.items():
         color_topics = [topic for topic in topics if '/color/image_raw' in topic]
         if not color_topics:
             raise RuntimeError(f'realsense:bundle requires a color image topic for camera {camera!r}')
         topic = sorted(color_topics)[0]
         representative_topics[camera] = topic
-        representative_streams[camera] = streams[realsense_stream_name(topic)]
+        representative_sources[camera] = sources[realsense_stream_name(topic)]
 
-    start_ns = max(max(stream.time_ns[0] for stream in representative_streams.values()), start_ns)
-    end_ns = min(min(stream.time_ns[-1] for stream in representative_streams.values()), end_ns)
+    start_ns = max(max(source.time_ns[0] for source in representative_sources.values()), start_ns)
+    end_ns = min(min(source.time_ns[-1] for source in representative_sources.values()), end_ns)
     if end_ns < start_ns:
-        return empty_table('realsense_bundle', 'RealSense visual bundle', 'realsense_bundle')
+        return empty_source('realsense_bundle', 'RealSense visual bundle', 'realsense_bundle')
 
-    cameras = sorted(representative_streams)
-    initial = choose_initial_bundle(cameras, representative_streams, start_ns)
+    cameras = sorted(representative_sources)
+    initial = choose_initial_bundle(cameras, representative_sources, start_ns)
     if initial is None:
-        return empty_table('realsense_bundle', 'RealSense visual bundle', 'realsense_bundle')
+        return empty_source('realsense_bundle', 'RealSense visual bundle', 'realsense_bundle')
 
     selected_indices: list[dict[str, int]] = []
-    modes: list[str] = []
+    modes: list[int] = []
+    mode_labels: list[str] = []
     resync: list[bool] = []
     reused: list[bool] = []
     current = initial
-    current_mode = 'initial_search'
+    current_mode = 0
+    current_mode_label = 'initial_search'
     current_resync = False
     current_reused = False
     last_t = -1
     while True:
-        bundle_time = max(int(representative_streams[camera].time_ns[current[camera]]) for camera in cameras)
+        bundle_time = max(int(representative_sources[camera].time_ns[current[camera]]) for camera in cameras)
         if bundle_time > end_ns:
             break
         if bundle_time > last_t:
             selected_indices.append(dict(current))
             modes.append(current_mode)
+            mode_labels.append(current_mode_label)
             resync.append(current_resync)
             reused.append(current_reused)
             last_t = bundle_time
         expected = {camera: current[camera] + 1 for camera in cameras}
-        if any(expected[camera] >= len(representative_streams[camera].time_ns) for camera in cameras):
+        if any(expected[camera] >= len(representative_sources[camera].time_ns) for camera in cameras):
             break
-        locked_span = bundle_span_ns(cameras, representative_streams, expected)
+        locked_span = bundle_span_ns(cameras, representative_sources, expected)
         if locked_span <= REALSENSE_BUNDLE_SPAN_WARN_NS:
             current = expected
-            current_mode = 'locked_plus_one'
+            current_mode = 1
+            current_mode_label = 'locked_plus_one'
             current_resync = False
             current_reused = False
             continue
-        fallback = choose_local_bundle(cameras, representative_streams, expected, last_t, end_ns)
+        fallback = choose_local_bundle(cameras, representative_sources, expected, last_t, end_ns)
         if fallback is None:
             current = expected
-            current_mode = 'degraded_best_effort'
+            current_mode = 3
+            current_mode_label = 'degraded_best_effort'
             current_resync = False
             current_reused = False
-            if max(int(representative_streams[camera].time_ns[current[camera]]) for camera in cameras) <= last_t:
+            if max(int(representative_sources[camera].time_ns[current[camera]]) for camera in cameras) <= last_t:
                 break
             continue
         current = fallback
-        current_mode = 'fallback_search'
+        current_mode = 2
+        current_mode_label = 'fallback_search'
         current_resync = True
         current_reused = any(current[camera] <= selected_indices[-1][camera] for camera in cameras)
 
     if not selected_indices:
-        return empty_table('realsense_bundle', 'RealSense visual bundle', 'realsense_bundle')
+        return empty_source('realsense_bundle', 'RealSense visual bundle', 'realsense_bundle')
 
     bundle_time_ns = np.asarray(
-        [max(int(representative_streams[camera].time_ns[indices[camera]]) for camera in cameras) for indices in selected_indices],
+        [max(int(representative_sources[camera].time_ns[indices[camera]]) for camera in cameras) for indices in selected_indices],
         dtype=np.int64,
     )
     bundle_span = np.asarray(
-        [bundle_span_ns(cameras, representative_streams, indices) for indices in selected_indices],
+        [bundle_span_ns(cameras, representative_sources, indices) for indices in selected_indices],
         dtype=np.int64,
     )
     degraded = bundle_span > REALSENSE_BUNDLE_SPAN_WARN_NS
     quality = np.asarray(['degraded_span' if value else 'ok' for value in degraded], dtype='<U32')
-    mode_array = np.asarray(modes, dtype='<U32')
+    mode_code = np.asarray(modes, dtype=np.uint8)
     resync_array = np.asarray(resync, dtype=bool)
     reused_array = np.asarray(reused, dtype=bool)
 
     arrays: dict[str, np.ndarray] = {
         'realsense_bundle_time_ns': bundle_time_ns,
         'realsense_bundle_span_ns': bundle_span,
-        'realsense_bundle_mode': mode_array,
+        'realsense_bundle_mode_code': mode_code,
         'realsense_bundle_quality': quality,
-        'realsense_bundle_resync': resync_array,
-        'realsense_bundle_reused': reused_array,
     }
-    stream_matches: dict[str, Match] = {}
+    children: dict[str, ChildSource] = {}
     selected_recorded_times: list[np.ndarray] = []
     for camera in cameras:
-        rep_stream = representative_streams[camera]
+        rep_source = representative_sources[camera]
         rep_positions = np.asarray([indices[camera] for indices in selected_indices], dtype=np.int64)
-        arrays[f'realsense_bundle_{safe_key(camera)}_index'] = rep_stream.source_index[rep_positions]
-        arrays[f'realsense_bundle_{safe_key(camera)}_time_ns'] = rep_stream.time_ns[rep_positions]
-        arrays[f'realsense_bundle_{safe_key(camera)}_recorded_time_ns'] = rep_stream.recorded_time_ns[rep_positions]
-        rep_times = rep_stream.time_ns[rep_positions]
+        arrays[f'realsense_bundle_{safe_key(camera)}_index'] = rep_source.source_index[rep_positions]
+        arrays[f'realsense_bundle_{safe_key(camera)}_time_ns'] = rep_source.time_ns[rep_positions]
+        arrays[f'realsense_bundle_{safe_key(camera)}_recorded_time_ns'] = rep_source.columns[f'{rep_source.name}_recorded_time_ns'][rep_positions]
+        rep_times = rep_source.time_ns[rep_positions]
         for topic in camera_topics[camera]:
-            stream = streams[realsense_stream_name(topic)]
-            positions = nearest_positions_for_times(stream.time_ns, rep_times)
-            deltas = np.abs(stream.time_ns[positions] - rep_times)
+            source = sources[realsense_stream_name(topic)]
+            positions = nearest_positions_for_times(source.time_ns, rep_times)
+            deltas = np.abs(source.time_ns[positions] - rep_times)
             mismatch_count = int(np.count_nonzero(deltas))
             if mismatch_count:
                 warnings.append(
                     f'RealSense bundle camera {camera} topic {topic} has {mismatch_count} frame(s) '
                     'whose selected header stamp differs from the representative color stamp'
                 )
-            valid = positions >= 0
-            stream_matches[stream.name] = Match(
-                stream.source_index[positions],
-                positions,
-                stream.time_ns[positions],
-                stream.time_ns[positions] - bundle_time_ns,
-                valid,
+            child_columns = {
+                key: value[positions]
+                for key, value in source.columns.items()
+            }
+            children[source.name] = ChildSource(
+                source.name,
+                source.display_name,
+                source.time_ns[positions],
+                source.source_index[positions],
+                child_columns,
+                dict(source.details),
             )
-            selected_recorded_times.append(stream.recorded_time_ns[positions])
+            selected_recorded_times.append(source.columns[f'{source.name}_recorded_time_ns'][positions])
 
     recorded_stack = np.vstack(selected_recorded_times)
     recorded_time_ns = recorded_stack.max(axis=0).astype(np.int64, copy=False)
@@ -943,14 +951,14 @@ def build_realsense_bundle_table(
         'bundle_count': int(len(bundle_time_ns)),
         'span_ns': numeric_summary(bundle_span),
         'recorded_span_ns': numeric_summary(recorded_span_ns),
-        'mode_counts': value_counts(mode_array),
+        'mode_counts': value_counts(np.asarray(mode_labels, dtype='<U32')),
         'quality_counts': value_counts(quality),
         'resync_count': int(resync_array.sum()),
         'degraded_count': int(degraded.sum()),
         'reused_count': int(reused_array.sum()),
         'span_warn_ns': REALSENSE_BUNDLE_SPAN_WARN_NS,
     }
-    return SourceTable(
+    return Source(
         'realsense_bundle',
         'RealSense visual bundle',
         bundle_time_ns,
@@ -958,29 +966,18 @@ def build_realsense_bundle_table(
         66_700_000,
         33_400_000,
         arrays,
-        stream_matches,
+        children,
         details,
     )
 
 
-def match_table(t_ns: np.ndarray, table: SourceTable, mode: str) -> Match:
+def match_source(t_ns: np.ndarray, source: Source, mode: str) -> Match:
     return match_timestamps(
         t_ns,
-        table.time_ns,
-        table.source_index,
-        table.tolerance_causal_ns,
-        table.tolerance_nearest_ns,
-        mode,
-    )
-
-
-def match_stream(t_ns: np.ndarray, stream: Stream, mode: str) -> Match:
-    return match_timestamps(
-        t_ns,
-        stream.time_ns,
-        stream.source_index,
-        stream.tolerance_causal_ns,
-        stream.tolerance_nearest_ns,
+        source.time_ns,
+        source.source_index,
+        source.tolerance_causal_ns,
+        source.tolerance_nearest_ns,
         mode,
     )
 
@@ -1038,35 +1035,35 @@ def group_realsense_topics_by_camera(topics: list[str]) -> dict[str, list[str]]:
 
 def choose_initial_bundle(
     cameras: list[str],
-    streams: dict[str, Stream],
+    sources: dict[str, Source],
     start_ns: int,
 ) -> dict[str, int] | None:
     candidate_lists: list[list[int]] = []
     for camera in cameras:
-        times = streams[camera].time_ns
+        times = sources[camera].time_ns
         center = int(np.searchsorted(times, start_ns, side='left'))
         candidates = bounded_index_window(len(times), center, REALSENSE_BUNDLE_INITIAL_SEARCH_RADIUS)
         candidate_lists.append(candidates)
-    return choose_best_bundle(cameras, streams, candidate_lists, min_time_ns=start_ns, max_time_ns=None)
+    return choose_best_bundle(cameras, sources, candidate_lists, min_time_ns=start_ns, max_time_ns=None)
 
 
 def choose_local_bundle(
     cameras: list[str],
-    streams: dict[str, Stream],
+    sources: dict[str, Source],
     expected: dict[str, int],
     last_time_ns: int,
     end_ns: int,
 ) -> dict[str, int] | None:
     candidate_lists = [
-        bounded_index_window(len(streams[camera].time_ns), expected[camera], REALSENSE_BUNDLE_FALLBACK_SEARCH_RADIUS)
+        bounded_index_window(len(sources[camera].time_ns), expected[camera], REALSENSE_BUNDLE_FALLBACK_SEARCH_RADIUS)
         for camera in cameras
     ]
-    return choose_best_bundle(cameras, streams, candidate_lists, min_time_ns=last_time_ns + 1, max_time_ns=end_ns)
+    return choose_best_bundle(cameras, sources, candidate_lists, min_time_ns=last_time_ns + 1, max_time_ns=end_ns)
 
 
 def choose_best_bundle(
     cameras: list[str],
-    streams: dict[str, Stream],
+    sources: dict[str, Source],
     candidate_lists: list[list[int]],
     min_time_ns: int,
     max_time_ns: int | None,
@@ -1074,7 +1071,7 @@ def choose_best_bundle(
     best: tuple[int, int, dict[str, int]] | None = None
     for combo in product(*candidate_lists):
         indices = dict(zip(cameras, combo))
-        times = [int(streams[camera].time_ns[indices[camera]]) for camera in cameras]
+        times = [int(sources[camera].time_ns[indices[camera]]) for camera in cameras]
         bundle_time = max(times)
         if bundle_time < min_time_ns:
             continue
@@ -1095,8 +1092,8 @@ def bounded_index_window(length: int, center: int, radius: int) -> list[int]:
     return list(range(start, stop + 1))
 
 
-def bundle_span_ns(cameras: list[str], streams: dict[str, Stream], indices: dict[str, int]) -> int:
-    times = [int(streams[camera].time_ns[indices[camera]]) for camera in cameras]
+def bundle_span_ns(cameras: list[str], sources: dict[str, Source], indices: dict[str, int]) -> int:
+    times = [int(sources[camera].time_ns[indices[camera]]) for camera in cameras]
     return max(times) - min(times)
 
 
@@ -1127,18 +1124,23 @@ def value_counts(values: np.ndarray) -> dict[str, int]:
     return result
 
 
-def stream_stats(stream: Stream, match: Match) -> dict[str, Any]:
+def entity_stats(display_name: str, frame_count: int, match: Match, details: dict[str, Any] | None = None) -> dict[str, Any]:
     valid = match.valid
     abs_delta = np.abs(match.delta_ns[valid])
-    return {
-        'display_name': stream.display_name,
-        'frame_count': int(len(stream.time_ns)),
+    result = {
+        'display_name': display_name,
+        'frame_count': int(frame_count),
         'used_count': int(valid.sum()),
         'invalid_count': int(len(valid) - valid.sum()),
         'max_abs_delta_ns': None if len(abs_delta) == 0 else int(abs_delta.max()),
         'mean_abs_delta_ns': None if len(abs_delta) == 0 else float(abs_delta.mean()),
         'median_abs_delta_ns': None if len(abs_delta) == 0 else float(np.median(abs_delta)),
     }
+    if details:
+        for key in ('topic', 'timestamp_source'):
+            if details.get(key) is not None:
+                result[key] = details[key]
+    return result
 
 
 def clock_domain_summary(npz_path: Path | None, warnings: list[str]) -> dict[str, Any]:
@@ -1269,12 +1271,6 @@ def required_image_topics(manifest: dict[str, Any]) -> list[str]:
     return [str(topic) for topic in (postcheck.get('required_topics') or readiness.get('required_topics') or [])]
 
 
-def image_topic_to_metadata_topic(topic: str) -> str:
-    if '/color/' in topic:
-        return topic.replace('/color/image_raw', '/color/metadata')
-    return re.sub(r'/aligned_depth_to_color/image_raw$', '/depth/metadata', topic)
-
-
 def realsense_stream_name(topic: str) -> str:
     parts = [part for part in topic.split('/') if part]
     camera = parts[0] if parts else 'camera'
@@ -1330,7 +1326,7 @@ def write_json(path: Path, payload: dict[str, Any]) -> None:
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description='Align timestamps for one MainController demo using explicit group-based v2 semantics')
+    parser = argparse.ArgumentParser(description='Align timestamps for one MainController demo using explicit source-based v3 semantics')
     parser.add_argument('--demo-dir', required=True)
     parser.add_argument('--output-dir', default=None)
     parser.add_argument('--repo-root', default=None)
@@ -1374,6 +1370,6 @@ def main() -> None:
 if __name__ == '__main__':
     main()
 
-# NOTE: This v2 standalone tool uses explicit group-based RealSense bundle and
-# same-row Xense pair semantics. MainController timestamp_alignment.py has not
-# been updated for these standalone v2 behaviors.
+# NOTE: This v3 standalone tool uses a unified Source model with explicit
+# RealSense bundle and same-row Xense pair semantics. MainController
+# timestamp_alignment.py has not been updated for these standalone v3 behaviors.
