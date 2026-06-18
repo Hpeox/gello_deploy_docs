@@ -33,7 +33,7 @@
 - `finished_ns`：主控保存 manifest 时的 `time.time_ns()`，晚于传感器 flush 和 rosbag stop，只能作为粗边界。`FINALIZING` 中传感器 `DEMO_DONE_REQ` 与 rosbag `stop` 会并发发出；若本次采集显式使用 `sensor_flush_timeout_s=none` / `unbounded`，该边界仍可能明显晚于采集停止时刻，这是预期的无界 flush 等待结果，离线对齐不应把这段等待时间解释为有效采集窗口。
 - `run_id`：本 demo 所属的 MainController 运行 ID。
 - `rosbag_uri`：当前 demo 的 rosbag 目录，相对 demo 目录保存，通常为 `rosbag`。
-- `sensor_paths.ft300`、`sensor_paths.xense`：可直接用于后处理的 `.npy` 路径，相对仓库根保存，例如 `runtime_frames/data_FT_*.npy`。FT300S/XenseTacSensor ACK payload 中的 `saved_file` 是 basename / filename，不是任意路径；active-demo abort 使用 `STOP_REQ` 尝试 flush sensor，因此 `saved_file` 是 best-effort optional 字段，缺失时对应路径为 `None`。
+- `sensor_paths.ft300`、`sensor_paths.xense`：可直接用于后处理的 `.npy` 路径，相对 runtime root 保存，例如 `runtime_frames/data_FT_*.npy`。FT300S/XenseTacSensor ACK payload 中的 `saved_file` 是 basename / filename，不是任意路径；active-demo abort 使用 `STOP_REQ` 尝试 flush sensor，因此 `saved_file` 是 best-effort optional 字段，缺失时对应路径为 `None`。
 - `npz.ft300`、`npz.xense`、`npz.realsense`、`npz.zmq`：主控保存的时间戳索引，相对 demo 目录保存。
 - `drop_monitors`：本 demo 内各来源丢帧和最大间隔统计，不包含前后 demo 的累计值。
 - `realsense_restart_events`：本 demo 内 RealSense 重启时间点；run-wide 累计值使用独立的 `run_realsense_restart_*` 字段。
@@ -51,8 +51,8 @@
 完整数据：`runtime_frames/<saved_file>`
 
 - 路径来自 `manifest.sensor_paths.ft300`。
-- `runtime_frames` 指仓库根目录下的 `runtime_frames`，例如 `/home/robot/Desktop/gello-deploy/runtime_frames`。
-- 路径解析规则：拼接为 `repo_root / manifest.sensor_paths.ft300`。
+- `runtime_frames` 指 runtime root 下的 `runtime_frames`，默认例如 `/home/robot/Desktop/gello-deploy/runtime_frames`。
+- 路径解析规则：拼接为 `runtime_root / manifest.sensor_paths.ft300`。
 - 数据结构是 `np.load(..., allow_pickle=True).item()`，包含 `events` 和 `frames_data`。
 - `frames_data["00000"]["ft300_timestamp_ns"]` 应与主控索引中的 `timestamp_ns` 按 `frame_id` 对应。
 - wrench/力矩等完整值在同一个 per-frame dict 中。
@@ -73,8 +73,8 @@
 完整数据：`runtime_frames/<saved_file>`
 
 - 路径来自 `manifest.sensor_paths.xense`。
-- `runtime_frames` 指仓库根目录下的 `runtime_frames`，例如 `/home/robot/Desktop/gello-deploy/runtime_frames`。
-- 路径解析规则：拼接为 `repo_root / manifest.sensor_paths.xense`。
+- `runtime_frames` 指 runtime root 下的 `runtime_frames`，默认例如 `/home/robot/Desktop/gello-deploy/runtime_frames`。
+- 路径解析规则：拼接为 `runtime_root / manifest.sensor_paths.xense`。
 - 数据结构是 `np.load(..., allow_pickle=True).item()`，包含 `events` 和 `frames_data`。
 - `frames_data["00000"]["OG000544_timestamp_ns"]`、`frames_data["00000"]["OG001009_timestamp_ns"]` 分别对应两个触觉传感器。
 - 当前第一版对齐只使用主控索引 `xense_timestamps.npz`；完整 `.npy` 读取与 timestamp 交叉校验列为后续增强。

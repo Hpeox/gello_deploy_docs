@@ -21,8 +21,8 @@
   - 使用 `zmq.Poller` 阻塞接收，不使用 1ms 空轮询。
   - demo 间保持读取，并维护环形缓冲或直接丢弃非 demo 数据。
 - 启动子进程：
-  - FT300S: `conda run -n modbus314 python -m FT300S.app --uds-path /tmp/ft300_sensor.sock --shm-name ft300_sensor_frame --fps 100`
-  - XenseTacSensor: 由 `--xense-sdk-version {1.x,2.0}` 选择 SDK 版本，默认 `2.0`；主控内部映射为 `1.x -> Xense310`、`2.0 -> xense2`，并用对应 conda env 启动 `python -m XenseTacSensor.app --uds-path /tmp/xense_sensor.sock --shm-name xense_sensor_frame --fps 30`
+  - FT300S: `conda run -n modbus314 python -m FT300S.app --uds-path /tmp/ft300_sensor.sock --shm-name ft300_sensor_frame --fps 100 --save-dir <runtime-root>/runtime_frames`
+  - XenseTacSensor: 由 `--xense-sdk-version {1.x,2.0}` 选择 SDK 版本，默认 `2.0`；主控内部映射为 `1.x -> Xense310`、`2.0 -> xense2`，并用对应 conda env 启动 `python -m XenseTacSensor.app --uds-path /tmp/xense_sensor.sock --shm-name xense_sensor_frame --fps 30 --save-dir <runtime-root>/runtime_frames`
   - RealSense: `conda deactivate` 后直接执行 `ros2 launch`，不重复 `source`。
 - UDS 控制：
   - 主控启动后自动连接 FT300S/XenseTacSensor UDS，并自动完成 `INIT_REQ`/`INIT_READY` 握手。

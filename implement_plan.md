@@ -273,8 +273,8 @@ demo 之外的数据进入环形缓冲或直接丢弃，但不能停止读。dem
 - materialize 实际数据集暂不实现；需要先确认数据集具体组织格式。
 - FT300S/XenseTacSensor ACK payload 中的 `saved_file` 按正式协议只表示
   basename / filename，不是任意路径。MainController runtime 内部按
-  `repo_root / "runtime_frames" / saved_file` 解析完整传感器 `.npy`；manifest 和
-  aligned manifest 中写稳定 repo-root 相对路径 `runtime_frames/<saved_file>`。
+  `runtime_root / "runtime_frames" / saved_file` 解析完整传感器 `.npy`；manifest 和
+  aligned manifest 中写稳定 runtime-root 相对路径 `runtime_frames/<saved_file>`。
 - 默认只对 `manifest.status == "done"` 的 demo 自动生成 aligned index/report；`failed` 和 `discarded` manifest 只用于诊断，除非后处理工具显式启用 degraded / index-only 模式。
 - RealSense 后处理以 manifest 中的 formal/debug_degraded required image topic list 为权威来源；不硬编码具体相机数量。
 - 启动暖机裁剪使用 `--start-trim-s` 和 `--end-trim-s`；这些参数只裁剪全局 overlap 窗口中的样本，不平移原始时间戳。
