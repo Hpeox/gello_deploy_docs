@@ -10,6 +10,7 @@
 
 - 新增 `main_controller` console script，作为主控启动入口。
 - MainController 是 ROS2 `ament_python` 包，但主体按普通 Python 控制程序设计；通过 `ros2 run main_controller main_controller` 启动，内部使用线程、队列、子进程、UDS、ZMQ 和少量 rclpy service/subscriber。
+- `--task-name` 是必选参数；主控启动时从 `<repo-root>/TaskInstruction/<task-name>.json` 加载加权 instruction 集合，并在每个新 demo 创建时随机抽样一次。
 - ZMQ telemetry 是必须项，但保留默认参数：
   - `--zmq-connect` 默认 `tcp://127.0.0.1:6000`
   - 远程 relay 不在本机时，用 `--zmq-connect tcp://<host>:6000` 覆盖。
@@ -45,7 +46,7 @@
   - `realsense_metadata.npz`
   - `zmq_telemetry.npz`
 - 使用 `.npz` 的理由：高频数据结构规则、数值密集，后处理对齐会直接进入 numpy；比 JSONL 更小、更快。默认不压缩，避免 demo 完成时 CPU 压缩阻塞。
-- `manifest.json` 记录 demo 起止时间、`run_id` 后的 `xense_sdk_version`、bag URI/segment、传感器 `.npy` 文件、主控 `.npz` 文件、帧数、告警计数、RealSense 重启次数和完成/放弃状态。采集 `status` 只表示 `done` / `discarded` / `failed` 采集事务；自动对齐结果写入独立 `manifest.alignment` 字段。
+- `manifest.json` 记录 demo 起止时间、`run_id` 后的 `xense_sdk_version`、`task_name` 和抽样得到的 `language_instruction`、bag URI/segment、传感器 `.npy` 文件、主控 `.npz` 文件、帧数、告警计数、RealSense 重启次数和完成/放弃状态。采集 `status` 只表示 `done` / `discarded` / `failed` 采集事务；自动对齐结果写入独立 `manifest.alignment` 字段。
 
 ## State Machine
 

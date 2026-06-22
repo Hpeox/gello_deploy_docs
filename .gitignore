@@ -6,6 +6,13 @@
 !/*Report.md
 !/*report.md
 
+*.py[cod]
+__pycache__/
+pytest_cache/
+
+!/TaskInstruction/
+/TaskInstruction/*
+!/TaskInstruction/README.md
+!/TaskInstruction/*.json
+
 !/tools/
-/tools/*
-!/tools/*.py

@@ -1,0 +1,44 @@
+{
+  "instructions": [
+    {
+      "text": "Remove the largest cylindrical peg from the base and insert it into the hole with the matching diameter.",
+      "weight": 0.6
+    },
+    {
+      "text": "Pick up the largest cylindrical peg from the base and place it into the matching hole.",
+      "weight": -1
+    },
+    {
+      "text": "Take the largest cylindrical peg out of the base and insert it into the hole with the same diameter.",
+      "weight": -1
+    },
+    {
+      "text": "Grasp the largest cylindrical peg from the base and insert it into the corresponding hole.",
+      "weight": -1
+    },
+    {
+      "text": "Remove the largest peg from the base and place it into the hole that matches its diameter.",
+      "weight": -1
+    },
+    {
+      "text": "Pick up the largest cylindrical peg and insert it into the hole with the matching size.",
+      "weight": -1
+    },
+    {
+      "text": "Take out the largest cylindrical peg and insert it into its corresponding hole.",
+      "weight": -1
+    },
+    {
+      "text": "Grasp the largest cylindrical peg and place it into the hole with the matching diameter.",
+      "weight": -1
+    },
+    {
+      "text": "Remove the largest cylindrical peg from the base and insert it into the matching hole.",
+      "weight": -1
+    },
+    {
+      "text": "Pick up the largest cylindrical peg from the base and insert it into the hole of the same diameter.",
+      "weight": -1
+    }
+  ]
+}

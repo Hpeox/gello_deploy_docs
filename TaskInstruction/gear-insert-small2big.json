@@ -1,0 +1,44 @@
+{
+  "instructions": [
+    {
+      "text": "Pick up the three gears one by one and mount them onto the gear shafts on the base in order from smallest to largest.",
+      "weight": 0.6
+    },
+    {
+      "text": "Mount the three gears onto the gear shafts on the base in ascending order of size.",
+      "weight": -1
+    },
+    {
+      "text": "Pick up each gear and place it onto a gear shaft on the base, starting with the smallest gear and ending with the largest gear.",
+      "weight": -1
+    },
+    {
+      "text": "Place the three gears onto the gear shafts on the base from smallest to largest.",
+      "weight": -1
+    },
+    {
+      "text": "Mount the smallest gear first, then the medium gear, and finally the largest gear onto the gear shafts on the base.",
+      "weight": -1
+    },
+    {
+      "text": "Pick up the gears sequentially and mount them onto the base shafts in order from the smallest to the largest.",
+      "weight": -1
+    },
+    {
+      "text": "Install the three gears on the gear shafts of the base, following the order from smallest to largest.",
+      "weight": -1
+    },
+    {
+      "text": "Assemble the gears on the base by mounting them onto the gear shafts in ascending size order.",
+      "weight": -1
+    },
+    {
+      "text": "Take the three gears one at a time and mount them onto the gear shafts, beginning with the smallest gear and finishing with the largest gear.",
+      "weight": -1
+    },
+    {
+      "text": "Place each gear onto a gear shaft on the base according to size, from the smallest gear to the largest gear.",
+      "weight": -1
+    }
+  ]
+}
