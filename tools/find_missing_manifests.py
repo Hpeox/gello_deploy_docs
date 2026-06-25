@@ -1,5 +1,16 @@
 #!/usr/bin/env python3
-"""Print absolute paths of demo directories missing a top-level manifest.json."""
+"""Print absolute paths of demo directories missing a top-level manifest.json.
+
+Usage:
+    # Scan the default runtime_sessions/demos directory.
+    /usr/bin/python3 tools/find_missing_manifests.py
+
+    # Scan a specific directory containing demo_* subdirectories.
+    /usr/bin/python3 tools/find_missing_manifests.py \
+      --demos-root /path/to/runtime_sessions/demos
+
+The tool is read-only and prints one absolute demo directory path per line.
+"""
 
 from __future__ import annotations
 

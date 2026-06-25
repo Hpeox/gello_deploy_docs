@@ -1,6 +1,17 @@
 #!/usr/bin/env python3
 """Analyze raw RealSense timing stability and visual bundle necessity.
 
+Usage:
+    # Analyze all successful demos using the default input and output roots.
+    /usr/bin/python3 tools/analyze_realsense_timing.py
+
+    # Run a bounded validation on the first five discovered demos.
+    /usr/bin/python3 tools/analyze_realsense_timing.py \
+      --input-dir runtime_sessions/demos \
+      --output-dir temp_realsense_test \
+      --limit 5 \
+      --pair-threshold-ms 20
+
 The script is intentionally read-only with respect to runtime_sessions/demos.
 It discovers demos with a successful aligned/aligned_manifest.json, reads raw
 RealSense metadata timestamps per demo, and writes a timestamped report run

@@ -1,5 +1,18 @@
 #!/usr/bin/env python3
-"""One-time in-place remapping tool for gripper gPO HDF5 datasets."""
+"""One-time in-place remapping tool for gripper gPO HDF5 datasets.
+
+Usage:
+    /usr/bin/python3 tools/remap_gripper_gpo.py
+
+The tool scans ``/data/external/DATASET/16mm-peg-in-hole/*.h5`` and performs a
+complete preflight before requesting confirmation. To apply the in-place
+changes, enter ``REMAP GPO DATASETS`` exactly at the prompt; any other input
+leaves all files unchanged.
+
+No backups are created. The tool verifies the written values and HDF5 dataset
+layout after each modification and attempts to restore the current file if a
+write or verification step fails.
+"""
 
 from __future__ import annotations
 

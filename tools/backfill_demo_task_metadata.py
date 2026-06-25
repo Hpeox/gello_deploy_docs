@@ -1,5 +1,24 @@
 #!/usr/bin/env python3
-"""Backfill task metadata in legacy MainController demo manifests."""
+"""Backfill task metadata in legacy MainController demo manifests.
+
+Usage:
+    # Preview the planned changes without modifying manifests.
+    /usr/bin/python3 tools/backfill_demo_task_metadata.py
+
+    # Apply the backfill after reviewing the dry-run summary.
+    /usr/bin/python3 tools/backfill_demo_task_metadata.py --apply
+
+    # Override the demo root, cutoff, and task assignments.
+    /usr/bin/python3 tools/backfill_demo_task_metadata.py \
+      --demos-root runtime_sessions/demos \
+      --cutoff demo_20260618_160911 \
+      --early-task 16mm-peg-in-hole \
+      --late-task gear-insert-big2small
+
+The default mode is read-only. The tool loads task instructions from
+``<repo-root>/TaskInstruction/<task-name>.json`` and only writes manifests when
+``--apply`` is specified.
+"""
 
 from __future__ import annotations
 
