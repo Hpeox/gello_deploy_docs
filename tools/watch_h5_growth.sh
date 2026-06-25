@@ -1,8 +1,12 @@
 #!/usr/bin/env bash
+
+# bash watch_h5_growth.sh [prefix]
+# bash watch_h5_growth.sh 20260625
+
 set -euo pipefail
 
 dir="/data/internal/DATASET"
-prefix="demo_20260623"
+prefix="demo_${1:-$(date +%Y%m%d)}"
 interval=30
 
 state="/tmp/watch_h5_growth_${UID}.tsv"
