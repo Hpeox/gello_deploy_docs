@@ -5,6 +5,7 @@
 !/review_report.md
 !/*Report.md
 !/*report.md
+!/*NOTE.md
 
 *.py[cod]
 __pycache__/
