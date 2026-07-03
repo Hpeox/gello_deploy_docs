@@ -28,7 +28,7 @@
 ### 已实现业务语义
 
 - ZMQ receiver 从启动后持续 drain socket；demo 外数据不写入 demo buffer，但不会停读，包括 `d/x` 后回到 `WAIT_START` 的 demo 间隔。
-- 主控启动时等待 ZMQ 首个合法 frame、等待 FT300S/XenseTacSensor UDS 连接和 `INIT_READY`。XenseTacSensor 通过 `--xense-sdk-version {1.x,2.0}` 选择 SDK 版本，默认 `2.0`；主控内部映射为 `1.x -> Xense310`、`2.0 -> xense2` 的 conda 环境。
+- 主控启动时等待 ZMQ 首个合法 frame、等待 FT300S/XenseTacSensor UDS 连接和 `INIT_READY`。XenseTacSensor 通过 `--xense-sdk-version {1.x,2.0,2.0.1}` 选择 SDK 版本，默认 `2.0.1`；主控内部映射为 `1.x -> Xense310`、`2.0 -> xense2_bak`、`2.0.1 -> xense2` 的 conda 环境。SDK `2.0.1` 已严格测试兼容现有 SDK `2.0.0` monkey patch，因此与 `2.0` 共用当前 2.x patch 文件。
 - 主控 CLI 必须提供 `--task-name`。主控启动时从 `<repo-root>/TaskInstruction/<task-name>.json` 加载并验证 instruction/weight；每个新 demo 创建时抽样一次并缓存，pause/resume 和后续 manifest 更新不重复抽样。
 - `s`：创建或恢复 demo，发送两个传感器 `START_REQ`，先验证 required RealSense image topics readiness，首次 segment 调用 rosbag2 `record`，随后调用 `resume`。
 - `p`：发送两个传感器 `PAUSE_REQ`，调用 rosbag2 `pause`，不再用 `stop` 暂停；若任一 required sensor pause 失败，写 `failed` manifest、记录 per-sensor command result，并进入 `ERROR -> STOPPING -> STOPPED`。
