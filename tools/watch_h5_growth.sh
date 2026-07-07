@@ -1,13 +1,26 @@
 #!/usr/bin/env bash
 
-# bash watch_h5_growth.sh [prefix]
-# bash watch_h5_growth.sh 20260625
+# bash watch_h5_growth.sh [date_or_prefix ...]
+# bash watch_h5_growth.sh 20260625 20260701
 
 set -euo pipefail
 
 dir="/data/internal/DATASET"
-prefix="demo_${1:-$(date +%Y%m%d)}"
 interval=30
+
+prefixes=()
+
+if (($# == 0)); then
+    prefixes=("demo_$(date +%Y%m%d)")
+else
+    for arg in "$@"; do
+        if [[ "$arg" == demo_* ]]; then
+            prefixes+=("$arg")
+        else
+            prefixes+=("demo_$arg")
+        fi
+    done
+fi
 
 state="/tmp/watch_h5_growth_${UID}.tsv"
 time_state="/tmp/watch_h5_growth_${UID}.time"
@@ -53,6 +66,23 @@ while true; do
     display=$(mktemp "${state}.display.XXXXXX")
     new_state=$(mktemp "${state}.new.XXXXXX")
     new_time=$(mktemp "${time_state}.new.XXXXXX")
+    find_args=("$dir" -maxdepth 1 -type f "(")
+    first_prefix=1
+
+    for prefix in "${prefixes[@]}"; do
+        if ((first_prefix)); then
+            first_prefix=0
+        else
+            find_args+=(-o)
+        fi
+
+        find_args+=(
+            -name "${prefix}*.h5"
+            -o -name "${prefix}*.h5.tmp"
+        )
+    done
+
+    find_args+=(")" -print0)
 
     # 生成四列：
     #   排序组、文件名、大小、完整路径
@@ -80,12 +110,7 @@ while true; do
             "$size" \
             "$file"
     done < <(
-        find "$dir" -maxdepth 1 -type f \
-            \( \
-                -name "${prefix}*.h5" \
-                -o -name "${prefix}*.h5.tmp" \
-            \) \
-            -print0
+        find "${find_args[@]}"
     ) > "$raw"
 
     # 已完成文件在前，临时文件在后；
