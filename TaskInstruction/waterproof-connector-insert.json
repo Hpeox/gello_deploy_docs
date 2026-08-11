@@ -1,0 +1,44 @@
+{
+  "instructions": [
+    {
+      "text": "Pick up the male waterproof connector and insert it into the matching female waterproof connector.",
+      "weight": -1
+    },
+    {
+      "text": "Grasp the male waterproof connector and connect it to the corresponding female waterproof connector.",
+      "weight": -1
+    },
+    {
+      "text": "Take the male waterproof connector and insert it into its matching female connector.",
+      "weight": -1
+    },
+    {
+      "text": "Pick up the male waterproof connector and plug it into the corresponding female waterproof connector.",
+      "weight": -1
+    },
+    {
+      "text": "Grasp the male waterproof connector and insert it into the matching female connector on the board.",
+      "weight": -1
+    },
+    {
+      "text": "Take the male waterproof connector and connect it to the matching female connector on the board.",
+      "weight": -1
+    },
+    {
+      "text": "Pick up the male waterproof connector and place it into the corresponding female waterproof connector.",
+      "weight": -1
+    },
+    {
+      "text": "Grasp the male waterproof connector and plug it into its matching female waterproof connector.",
+      "weight": -1
+    },
+    {
+      "text": "Take the male waterproof connector and insert it into the corresponding female waterproof connector on the board.",
+      "weight": -1
+    },
+    {
+      "text": "Pick up the male waterproof connector and connect it with the matching female waterproof connector.",
+      "weight": -1
+    }
+  ]
+}
